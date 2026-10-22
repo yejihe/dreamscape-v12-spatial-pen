@@ -1,4 +1,6 @@
 plugins { id 'com.android.application' }
+def fixedStore = System.getenv('DREAMSCAPE_KEYSTORE_FILE')
+def fixedPass = System.getenv('DREAMSCAPE_KEYSTORE_PASSWORD')
 android {
     namespace 'com.dreamscape.arprobe'
     compileSdk 35
@@ -8,6 +10,19 @@ android {
         targetSdk 28
         versionCode 3
         versionName '0.2.1'
+    }
+    if (fixedStore && fixedPass) {
+        signingConfigs {
+            stableDebug {
+                storeFile file(fixedStore)
+                storePassword fixedPass
+                keyAlias 'dreamscape-debug'
+                keyPassword fixedPass
+            }
+        }
+        buildTypes {
+            debug { signingConfig signingConfigs.stableDebug }
+        }
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
