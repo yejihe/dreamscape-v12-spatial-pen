@@ -269,14 +269,21 @@ Button undo=new Button(this);undo.setText("撤销");
     private static float[] minus(float[] a,float[] b){return new float[]{a[0]-b[0],a[1]-b[1],a[2]-b[2]};}
     private void renderStrokes(){
         GLES20.glUseProgram(lineProgram);
-        GLES20.glUniformMatrix4fv(lineMvp,1,false,mvp,0);
         GLES20.glUniform4f(lineColor,0.18f,0.88f,1.0f,1.0f);
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glEnableVertexAttribArray(lineAttr);
         // Catmull-Rom interpolated centerline + continuous 8-sided round tube.
         // Fixed world radius 6 mm; no detached rectangular segments.
-        final int sides=8; final float radius=0.006f;
-        for(ArrayList<float[]> stroke:strokes){
+        final int sides=8;
+        for(int strokeIndex=0;strokeIndex<strokes.size();strokeIndex++){
+            if(strokeIndex>=strokeAnchors.size())continue;
+            Anchor anchor=strokeAnchors.get(strokeIndex);
+            if(anchor.getTrackingState()!=TrackingState.TRACKING)continue;
+            anchor.getPose().toMatrix(anchorMatrix,0);
+            Matrix.multiplyMM(anchoredMvp,0,mvp,0,anchorMatrix,0);
+            GLES20.glUniformMatrix4fv(lineMvp,1,false,anchoredMvp,0);
+            ArrayList<float[]> stroke=strokes.get(strokeIndex);
+            final float radius=radii.get(strokeIndex);
             if(stroke.size()<2)continue;
             ArrayList<float[]> path=new ArrayList<>();
             for(int k=0;k<stroke.size()-1;k++){
@@ -315,6 +322,13 @@ Button undo=new Button(this);undo.setText("撤销");
                 }
                 ringPrev=ring;prevSide=side;
             }
+        }
+        if(liveTip!=null){
+            GLES20.glUniformMatrix4fv(lineMvp,1,false,mvp,0);
+            GLES20.glUniform4f(lineColor,1.0f,penDown?0.25f:0.78f,0.15f,1f);
+            FloatBuffer dot=floatBuffer(liveTip);
+            GLES20.glVertexAttribPointer(lineAttr,3,GLES20.GL_FLOAT,false,0,dot);
+            GLES20.glDrawArrays(GLES20.GL_POINTS,0,1);
         }
         GLES20.glDisableVertexAttribArray(lineAttr);
     }
