@@ -87,6 +87,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
                 String[] parts=message.split("\\n");
                 String track="";
                 for(String line:parts) if(line.startsWith("追踪状态：")) {track=line;break;}
+                for(String line:parts) if(line.startsWith("模式："))track+="\n"+line;
                 status.setText(expandedStatus || track.isEmpty()?message:track+"  ·  点击展开数据");
             }
         });
@@ -311,6 +312,7 @@ Button undo=new Button(this);undo.setText("撤销");
                 String s = String.format(Locale.US, "帧数：%d\n追踪状态：%s\nX: %.3f m\nY: %.3f m\nZ: %.3f m\n方向四元数: %.3f, %.3f, %.3f, %.3f",
                     frames, c.getTrackingState()+" / "+c.getTrackingFailureReason(), p.tx(), p.ty(), p.tz(), p.qx(), p.qy(), p.qz(), p.qw());
                 if(staticMarker!=null) s+=String.format(Locale.US,"\n蓝点=固定世界坐标 / 黄点=Anchor\n两标记距离 %.1f cm",markerSeparation*100f);
+                if(diagnosticCameraOrigin!=null) s+=String.format(Locale.US,"\n模式：%s  |  相对起点：%.1f cm\n累计移动：%.1f cm  |  旋转：%.1f°\n追踪丢失帧：%d", diagnosticMode==1?"原地旋转":diagnosticMode==2?"水平移动":"未选择",diagnosticDisplacement*100f,cameraTravel*100f,cameraTurnDeg,trackingLostFrames);
                 say(s);
             }
         } catch (Exception e) { active = false; say("追踪失败：" + e.getClass().getSimpleName() + "\n" + e.getMessage()); }
