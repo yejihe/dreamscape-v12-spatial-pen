@@ -31,7 +31,8 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
     private volatile boolean active = false;
     private boolean installRequested = false;
     private int texture = 0, frames = 0, shader = 0, posAttr = 0, uvAttr = 0, texUniform = 0;
-    private int viewWidth = 1, viewHeight = 1;
+    private volatile int viewWidth = 1, viewHeight = 1;
+    private boolean geometryInitialized = false;
     private final FloatBuffer vertices = floatBuffer(new float[]{-1,-1, 1,-1, -1,1, 1,1});
     private final FloatBuffer texcoords = floatBuffer(new float[8]);
     private static FloatBuffer floatBuffer(float[] a) { FloatBuffer b=ByteBuffer.allocateDirect(a.length*4).order(ByteOrder.nativeOrder()).asFloatBuffer();b.put(a);b.position(0);return b; }
@@ -53,7 +54,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(20, 28, 20, 20);
         TextView title = new TextView(this);
-        title.setText("🌌 Dreamscape V12 · 原生 ARCore 诊断 v0.2.0\n相机透视渲染与追踪状态测试");
+        title.setText("🌌 Dreamscape V12 · 原生 ARCore 诊断 v0.2.1\n相机透视渲染与追踪状态测试");
         title.setTextSize(18);
         root.addView(title);
         status = new TextView(this);
@@ -101,6 +102,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         }
     }
     @Override public void onSurfaceCreated(javax.microedition.khronos.opengles.GL10 gl, javax.microedition.khronos.egl.EGLConfig cfg) {
+        geometryInitialized=false;
         int[] ids = new int[1]; GLES20.glGenTextures(1,ids,0);texture=ids[0];
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,texture);
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_MIN_FILTER,GLES20.GL_LINEAR);
@@ -112,15 +114,19 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         shader=GLES20.glCreateProgram();GLES20.glAttachShader(shader,compile(GLES20.GL_VERTEX_SHADER,vs));GLES20.glAttachShader(shader,compile(GLES20.GL_FRAGMENT_SHADER,fs));GLES20.glLinkProgram(shader);
         posAttr=GLES20.glGetAttribLocation(shader,"aPos");uvAttr=GLES20.glGetAttribLocation(shader,"aUv");texUniform=GLES20.glGetUniformLocation(shader,"uCamera");
     }
-    @Override public void onSurfaceChanged(javax.microedition.khronos.opengles.GL10 gl, int w, int h) { viewWidth=w;viewHeight=h;GLES20.glViewport(0,0,w,h); }
+    @Override public void onSurfaceChanged(javax.microedition.khronos.opengles.GL10 gl, int w, int h) { viewWidth=w;viewHeight=h;geometryInitialized=false;GLES20.glViewport(0,0,w,h); }
     @Override public void onDrawFrame(javax.microedition.khronos.opengles.GL10 gl) {
         GLES20.glClearColor(0.04f,0.07f,0.13f,1); GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
         if (!active || session == null || texture == 0) return;
         try {
+            session.setDisplayGeometry(getWindowManager().getDefaultDisplay().getRotation(),viewWidth,viewHeight);
             session.setCameraTextureName(texture);
             Frame f = session.update();
-            if(f.hasDisplayGeometryChanged()) {
+            if(!geometryInitialized || f.hasDisplayGeometryChanged()) {
+                vertices.position(0);
+                texcoords.position(0);
                 f.transformCoordinates2d(Coordinates2d.OPENGL_NORMALIZED_DEVICE_COORDINATES,vertices,Coordinates2d.TEXTURE_NORMALIZED,texcoords);
+                geometryInitialized=true;
             }
             if (f.getTimestamp() != 0) drawCamera();
             Camera c = f.getCamera();
