@@ -53,7 +53,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(20, 28, 20, 20);
         TextView title = new TextView(this);
-        title.setText("🌌 Dreamscape V12 · 原生 ARCore 诊断\n原生 ARCore 实景追踪测试");
+        title.setText("🌌 Dreamscape V12 · 原生 ARCore 诊断 v0.2.0\n相机透视渲染与追踪状态测试");
         title.setTextSize(18);
         root.addView(title);
         status = new TextView(this);
