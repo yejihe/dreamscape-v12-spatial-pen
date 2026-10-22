@@ -7,6 +7,8 @@ import android.opengl.GLES20;
 import android.opengl.GLES11Ext;
 import android.opengl.Matrix;
 import android.view.MotionEvent;
+import android.graphics.Color;
+import android.graphics.Typeface;
 import java.util.ArrayList;
 import com.google.ar.core.Coordinates2d;
 import java.nio.ByteBuffer;
@@ -63,7 +65,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(20, 28, 20, 20);
         TextView title = new TextView(this);
-        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.0\n按住画线 · 松开停笔 · 移动手机观察");
+        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.1\n按住画线 · 松开停笔 · 移动手机观察");
         title.setTextSize(18);
         root.addView(title);
         status = new TextView(this);
@@ -73,26 +75,43 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         root.addView(start);
         start.setOnClickListener(v -> begin());
         LinearLayout toolbar = new LinearLayout(this);
-        Button draw = new Button(this); draw.setText("按住绘画");
+        toolbar.setOrientation(LinearLayout.VERTICAL);
+        toolbar.setPadding(8,8,8,12);
+        Button draw = new Button(this); draw.setText("●  按住绘画");
+        draw.setTextSize(23);
+        draw.setTypeface(null,Typeface.BOLD);
+        draw.setTextColor(Color.WHITE);
+        draw.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(26,128,211)));
         draw.setOnTouchListener((v,event)->{
             int action=event.getActionMasked();
-            if(action==MotionEvent.ACTION_DOWN){penDown=true;return true;}
-            if(action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_CANCEL){penDown=false;return true;}
+            if(action==MotionEvent.ACTION_DOWN){
+                penDown=true;draw.setText("●  正在绘画…");
+                draw.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(239,79,91)));
+                draw.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
+                return true;
+            }
+            if(action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_CANCEL){
+                penDown=false;draw.setText("●  按住绘画");
+                draw.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(26,128,211)));
+                return true;
+            }
             return true;
         });
         Button undo=new Button(this);undo.setText("撤销");
         undo.setOnClickListener(v->surface.queueEvent(()->{ if(!strokes.isEmpty())strokes.remove(strokes.size()-1);currentStroke=null;previousPenDown=false; }));
         Button clear=new Button(this);clear.setText("清空");
         clear.setOnClickListener(v->surface.queueEvent(()->{strokes.clear();currentStroke=null;previousPenDown=false;}));
-        toolbar.addView(draw,new LinearLayout.LayoutParams(0,-2,2));
-        toolbar.addView(undo,new LinearLayout.LayoutParams(0,-2,1));
-        toolbar.addView(clear,new LinearLayout.LayoutParams(0,-2,1));
-        root.addView(toolbar);
+        toolbar.addView(draw,new LinearLayout.LayoutParams(-1,88));
+        LinearLayout actions=new LinearLayout(this);
+        actions.addView(undo,new LinearLayout.LayoutParams(0,58,1));
+        actions.addView(clear,new LinearLayout.LayoutParams(0,58,1));
+        toolbar.addView(actions);
         surface = new GLSurfaceView(this);
         surface.setEGLContextClientVersion(2);
         surface.setRenderer(this);
         surface.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
         root.addView(surface, new LinearLayout.LayoutParams(-1, 0, 1));
+        root.addView(toolbar);
         setContentView(root);
         say("先启动 ARCore；TRACKING 后按住按钮移动手机绘画。笔尖暂以相机前上方偏移估计，尚未做顶部实体标定。");
     }
@@ -195,11 +214,38 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         GLES20.glEnableVertexAttribArray(lineAttr);
         for(ArrayList<float[]> stroke:strokes){
             if(stroke.isEmpty())continue;
-            float[] points=new float[stroke.size()*3];
-            for(int i=0;i<stroke.size();i++){float[] p=stroke.get(i);System.arraycopy(p,0,points,i*3,3);}
-            FloatBuffer buffer=floatBuffer(points);
-            GLES20.glVertexAttribPointer(lineAttr,3,GLES20.GL_FLOAT,false,0,buffer);
-            GLES20.glDrawArrays(stroke.size()>1?GLES20.GL_LINE_STRIP:GLES20.GL_POINTS,0,stroke.size());
+            // World-space billboard ribbon; GL_LINE_WIDTH is unreliable on mobile OpenGL ES.
+            float[] cameraRight={viewMatrix[0],viewMatrix[4],viewMatrix[8]};
+            float[] cameraUp={viewMatrix[1],viewMatrix[5],viewMatrix[9]};
+            if(stroke.size()==1){
+                float[] p=stroke.get(0);
+                FloatBuffer buffer=floatBuffer(new float[]{p[0],p[1],p[2]});
+                GLES20.glVertexAttribPointer(lineAttr,3,GLES20.GL_FLOAT,false,0,buffer);
+                GLES20.glDrawArrays(GLES20.GL_POINTS,0,1);
+                continue;
+            }
+            for(int k=1;k<stroke.size();k++){
+                float[] a=stroke.get(k-1),b=stroke.get(k);
+                float dx=b[0]-a[0],dy=b[1]-a[1],dz=b[2]-a[2];
+                float vx=dx*cameraRight[0]+dy*cameraRight[1]+dz*cameraRight[2];
+                float vy=dx*cameraUp[0]+dy*cameraUp[1]+dz*cameraUp[2];
+                float length=(float)Math.sqrt(vx*vx+vy*vy);
+                if(length<0.00001f)continue;
+                // Approx. 16 mm stroke diameter, visibly thicker than GL_LINES.
+                float halfWidth=0.008f;
+                float nx=(-vy/length)*halfWidth, ny=(vx/length)*halfWidth;
+                float ox=cameraRight[0]*nx+cameraUp[0]*ny;
+                float oy=cameraRight[1]*nx+cameraUp[1]*ny;
+                float oz=cameraRight[2]*nx+cameraUp[2]*ny;
+                FloatBuffer ribbon=floatBuffer(new float[]{
+                    a[0]+ox,a[1]+oy,a[2]+oz,
+                    a[0]-ox,a[1]-oy,a[2]-oz,
+                    b[0]+ox,b[1]+oy,b[2]+oz,
+                    b[0]-ox,b[1]-oy,b[2]-oz
+                });
+                GLES20.glVertexAttribPointer(lineAttr,3,GLES20.GL_FLOAT,false,0,ribbon);
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4);
+            }
         }
         GLES20.glDisableVertexAttribArray(lineAttr);
     }
