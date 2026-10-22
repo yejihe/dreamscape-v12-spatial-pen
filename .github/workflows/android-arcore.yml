@@ -29,6 +29,20 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10.2'
+      - name: Load stable debug signing (when configured)
+        env:
+          KEYSTORE_B64: ${{ secrets.DREAMSCAPE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.DREAMSCAPE_KEYSTORE_PASSWORD }}
+        run: |
+          if [[ -n "$KEYSTORE_B64" && -n "$KEYSTORE_PASS" ]]; then
+            printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/dreamscape-debug.jks"
+            echo "DREAMSCAPE_KEYSTORE_FILE=$RUNNER_TEMP/dreamscape-debug.jks" >> "$GITHUB_ENV"
+            echo "::add-mask::$KEYSTORE_PASS"
+            echo "DREAMSCAPE_KEYSTORE_PASSWORD=$KEYSTORE_PASS" >> "$GITHUB_ENV"
+            echo "Stable signing enabled"
+          else
+            echo "::warning::Stable signing secrets not configured. Generated APK uses temporary debug key; future builds may not install over it."
+          fi
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
