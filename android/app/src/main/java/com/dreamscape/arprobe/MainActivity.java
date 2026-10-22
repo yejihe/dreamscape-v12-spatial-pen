@@ -19,6 +19,7 @@ import android.os.Bundle;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Button;
+import android.widget.SeekBar;
 import android.view.View;
 import com.google.ar.core.ArCoreApk;
 import com.google.ar.core.Camera;
@@ -45,6 +46,10 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
     private volatile boolean penDown = false;
     private boolean previousPenDown = false;
     private final ArrayList<ArrayList<float[]>> strokes = new ArrayList<>();
+    private final ArrayList<Float> radii = new ArrayList<>();
+    private volatile float brushRadius=0.010f;
+    private volatile float[] liveTip=null;
+    private final float[] anchorMatrix=new float[16], anchoredMvp=new float[16];
     private ArrayList<float[]> currentStroke = null;
     private float[] filteredTip=null;
     private int rejectedJumps=0;
@@ -82,7 +87,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(10),dp(6),dp(10),dp(6));
         TextView title = new TextView(this);
-        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.3");
+        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.4");
         title.setTextSize(17);
         root.addView(title);
         status = new TextView(this);
@@ -115,10 +120,19 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
             }
             return true;
         });
-        Button undo=new Button(this);undo.setText("撤销");
-        undo.setOnClickListener(v->surface.queueEvent(()->{ if(!strokes.isEmpty()){strokes.remove(strokes.size()-1);strokeAnchors.remove(strokeAnchors.size()-1).detach();}currentStroke=null;filteredTip=null;previousPenDown=false; }));
+        TextView brushText=new TextView(this);
+brushText.setText("笔刷：20 mm");brushText.setTextSize(15);
+SeekBar brushSize=new SeekBar(this);brushSize.setMax(36);brushSize.setProgress(16);
+brushSize.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+public void onProgressChanged(SeekBar b,int p,boolean fromUser){int mm=4+p;brushRadius=mm/2000f;brushText.setText("笔刷："+mm+" mm");}
+public void onStartTrackingTouch(SeekBar b){}
+public void onStopTrackingTouch(SeekBar b){}
+});
+toolbar.addView(brushText);toolbar.addView(brushSize,new LinearLayout.LayoutParams(-1,dp(38)));
+Button undo=new Button(this);undo.setText("撤销");
+        undo.setOnClickListener(v->surface.queueEvent(()->{ if(!strokes.isEmpty()){strokes.remove(strokes.size()-1);radii.remove(radii.size()-1);strokeAnchors.remove(strokeAnchors.size()-1).detach();}currentStroke=null;filteredTip=null;previousPenDown=false; }));
         Button clear=new Button(this);clear.setText("清空");
-        clear.setOnClickListener(v->surface.queueEvent(()->{for(Anchor a:strokeAnchors)a.detach();strokeAnchors.clear();strokes.clear();currentStroke=null;filteredTip=null;previousPenDown=false;}));
+        clear.setOnClickListener(v->surface.queueEvent(()->{for(Anchor a:strokeAnchors)a.detach();strokeAnchors.clear();strokes.clear();radii.clear();currentStroke=null;filteredTip=null;previousPenDown=false;}));
         toolbar.addView(draw,new LinearLayout.LayoutParams(-1,dp(76)));
         draw.setMinimumHeight(dp(76));
         LinearLayout actions=new LinearLayout(this);
@@ -177,7 +191,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         String fs="#extension GL_OES_EGL_image_external : require\nprecision mediump float; varying vec2 vUv; uniform samplerExternalOES uCamera; void main(){gl_FragColor=texture2D(uCamera,vUv);}";
         shader=GLES20.glCreateProgram();GLES20.glAttachShader(shader,compile(GLES20.GL_VERTEX_SHADER,vs));GLES20.glAttachShader(shader,compile(GLES20.GL_FRAGMENT_SHADER,fs));GLES20.glLinkProgram(shader);
         posAttr=GLES20.glGetAttribLocation(shader,"aPos");uvAttr=GLES20.glGetAttribLocation(shader,"aUv");texUniform=GLES20.glGetUniformLocation(shader,"uCamera");
-        String lvs="uniform mat4 uMVP; attribute vec3 aPoint; void main(){gl_Position=uMVP*vec4(aPoint,1.0);gl_PointSize=10.0;}";
+        String lvs="uniform mat4 uMVP; attribute vec3 aPoint; void main(){gl_Position=uMVP*vec4(aPoint,1.0);gl_PointSize=25.0;}";
         String lfs="precision mediump float; uniform vec4 uColor; void main(){gl_FragColor=uColor;}";
         lineProgram=GLES20.glCreateProgram();GLES20.glAttachShader(lineProgram,compile(GLES20.GL_VERTEX_SHADER,lvs));GLES20.glAttachShader(lineProgram,compile(GLES20.GL_FRAGMENT_SHADER,lfs));GLES20.glLinkProgram(lineProgram);
         lineAttr=GLES20.glGetAttribLocation(lineProgram,"aPoint");lineMvp=GLES20.glGetUniformLocation(lineProgram,"uMVP");lineColor=GLES20.glGetUniformLocation(lineProgram,"uColor");
@@ -201,11 +215,12 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
             Pose p = c.getPose();
             boolean tracking=c.getTrackingState()==TrackingState.TRACKING;
             if(penDown && tracking) {
-                Pose tip=p.compose(Pose.makeTranslation(0f,0.06f,-0.18f));
+                Pose tip=p.compose(Pose.makeTranslation(0f,0f,-0.42f));
                 float[] xyz=tip.getTranslation();
                 if(!previousPenDown || currentStroke==null) {
                     currentStroke=new ArrayList<>();
                     strokes.add(currentStroke);
+                    radii.add(brushRadius);
                     strokeAnchors.add(session.createAnchor(tip));
                     filteredTip=xyz.clone();
                 }
@@ -221,6 +236,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
                     else {penDown=false;currentStroke=null;}
                 }
             }else {currentStroke=null;filteredTip=null;}
+            liveTip=tracking?p.compose(Pose.makeTranslation(0f,0f,-0.42f)).getTranslation():null;
             previousPenDown=penDown && tracking;
             if(tracking) {
                 c.getProjectionMatrix(projection,0,0.01f,100f);
