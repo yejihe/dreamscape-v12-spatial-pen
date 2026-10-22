@@ -5,6 +5,9 @@ import android.app.Activity;
 import android.content.pm.PackageManager;
 import android.opengl.GLES20;
 import android.opengl.GLES11Ext;
+import android.opengl.Matrix;
+import android.view.MotionEvent;
+import java.util.ArrayList;
 import com.google.ar.core.Coordinates2d;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -33,6 +36,12 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
     private int texture = 0, frames = 0, shader = 0, posAttr = 0, uvAttr = 0, texUniform = 0;
     private volatile int viewWidth = 1, viewHeight = 1;
     private boolean geometryInitialized = false;
+    private volatile boolean penDown = false;
+    private boolean previousPenDown = false;
+    private final ArrayList<ArrayList<float[]>> strokes = new ArrayList<>();
+    private ArrayList<float[]> currentStroke = null;
+    private int lineProgram, lineAttr, lineMvp, lineColor;
+    private final float[] projection = new float[16], viewMatrix = new float[16], mvp = new float[16];
     private final FloatBuffer vertices = floatBuffer(new float[]{-1,-1, 1,-1, -1,1, 1,1});
     private final FloatBuffer texcoords = floatBuffer(new float[8]);
     private static FloatBuffer floatBuffer(float[] a) { FloatBuffer b=ByteBuffer.allocateDirect(a.length*4).order(ByteOrder.nativeOrder()).asFloatBuffer();b.put(a);b.position(0);return b; }
@@ -54,7 +63,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(20, 28, 20, 20);
         TextView title = new TextView(this);
-        title.setText("🌌 Dreamscape V12 · 原生 ARCore 诊断 v0.2.1\n相机透视渲染与追踪状态测试");
+        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.0\n按住画线 · 松开停笔 · 移动手机观察");
         title.setTextSize(18);
         root.addView(title);
         status = new TextView(this);
@@ -63,13 +72,29 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         Button start = new Button(this); start.setText("检查并启动 ARCore");
         root.addView(start);
         start.setOnClickListener(v -> begin());
+        LinearLayout toolbar = new LinearLayout(this);
+        Button draw = new Button(this); draw.setText("按住绘画");
+        draw.setOnTouchListener((v,event)->{
+            int action=event.getActionMasked();
+            if(action==MotionEvent.ACTION_DOWN){penDown=true;return true;}
+            if(action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_CANCEL){penDown=false;return true;}
+            return true;
+        });
+        Button undo=new Button(this);undo.setText("撤销");
+        undo.setOnClickListener(v->surface.queueEvent(()->{ if(!strokes.isEmpty())strokes.remove(strokes.size()-1);currentStroke=null;previousPenDown=false; }));
+        Button clear=new Button(this);clear.setText("清空");
+        clear.setOnClickListener(v->surface.queueEvent(()->{strokes.clear();currentStroke=null;previousPenDown=false;}));
+        toolbar.addView(draw,new LinearLayout.LayoutParams(0,-2,2));
+        toolbar.addView(undo,new LinearLayout.LayoutParams(0,-2,1));
+        toolbar.addView(clear,new LinearLayout.LayoutParams(0,-2,1));
+        root.addView(toolbar);
         surface = new GLSurfaceView(this);
         surface.setEGLContextClientVersion(2);
         surface.setRenderer(this);
         surface.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
         root.addView(surface, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(root);
-        say("点击启动；允许相机权限后观察 TRACKING 与 XYZ 是否变化。");
+        say("先启动 ARCore；TRACKING 后按住按钮移动手机绘画。笔尖暂以相机前上方偏移估计，尚未做顶部实体标定。");
     }
     private void begin() {
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
@@ -113,6 +138,10 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         String fs="#extension GL_OES_EGL_image_external : require\nprecision mediump float; varying vec2 vUv; uniform samplerExternalOES uCamera; void main(){gl_FragColor=texture2D(uCamera,vUv);}";
         shader=GLES20.glCreateProgram();GLES20.glAttachShader(shader,compile(GLES20.GL_VERTEX_SHADER,vs));GLES20.glAttachShader(shader,compile(GLES20.GL_FRAGMENT_SHADER,fs));GLES20.glLinkProgram(shader);
         posAttr=GLES20.glGetAttribLocation(shader,"aPos");uvAttr=GLES20.glGetAttribLocation(shader,"aUv");texUniform=GLES20.glGetUniformLocation(shader,"uCamera");
+        String lvs="uniform mat4 uMVP; attribute vec3 aPoint; void main(){gl_Position=uMVP*vec4(aPoint,1.0);gl_PointSize=10.0;}";
+        String lfs="precision mediump float; uniform vec4 uColor; void main(){gl_FragColor=uColor;}";
+        lineProgram=GLES20.glCreateProgram();GLES20.glAttachShader(lineProgram,compile(GLES20.GL_VERTEX_SHADER,lvs));GLES20.glAttachShader(lineProgram,compile(GLES20.GL_FRAGMENT_SHADER,lfs));GLES20.glLinkProgram(lineProgram);
+        lineAttr=GLES20.glGetAttribLocation(lineProgram,"aPoint");lineMvp=GLES20.glGetUniformLocation(lineProgram,"uMVP");lineColor=GLES20.glGetUniformLocation(lineProgram,"uColor");
     }
     @Override public void onSurfaceChanged(javax.microedition.khronos.opengles.GL10 gl, int w, int h) { viewWidth=w;viewHeight=h;geometryInitialized=false;GLES20.glViewport(0,0,w,h); }
     @Override public void onDrawFrame(javax.microedition.khronos.opengles.GL10 gl) {
@@ -131,6 +160,24 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
             if (f.getTimestamp() != 0) drawCamera();
             Camera c = f.getCamera();
             Pose p = c.getPose();
+            boolean tracking=c.getTrackingState()==TrackingState.TRACKING;
+            if(penDown && tracking) {
+                // ARCore camera pose is world-from-camera. This is a provisional,
+                // configurable virtual tip, NOT a calibrated physical phone top.
+                Pose tip=p.compose(Pose.makeTranslation(0f,0.06f,-0.18f));
+                float[] xyz=tip.getTranslation();
+                if(!previousPenDown || currentStroke==null) {
+                    currentStroke=new ArrayList<>();strokes.add(currentStroke);
+                }
+                if(currentStroke.isEmpty() || distance(currentStroke.get(currentStroke.size()-1),xyz)>0.008f) currentStroke.add(xyz);
+            }else {currentStroke=null;}
+            previousPenDown=penDown && tracking;
+            if(tracking) {
+                c.getProjectionMatrix(projection,0,0.01f,100f);
+                c.getViewMatrix(viewMatrix,0);
+                Matrix.multiplyMM(mvp,0,projection,0,viewMatrix,0);
+                renderStrokes();
+            }
             frames++;
             if (frames % 12 == 0) {
                 String s = String.format(Locale.US, "帧数：%d\n追踪状态：%s\nX: %.3f m\nY: %.3f m\nZ: %.3f m\n方向四元数: %.3f, %.3f, %.3f, %.3f",
@@ -139,8 +186,25 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
             }
         } catch (Exception e) { active = false; say("追踪失败：" + e.getClass().getSimpleName() + "\n" + e.getMessage()); }
     }
+    private static float distance(float[] a,float[] b){float x=a[0]-b[0],y=a[1]-b[1],z=a[2]-b[2];return (float)Math.sqrt(x*x+y*y+z*z);}
+    private void renderStrokes(){
+        GLES20.glUseProgram(lineProgram);
+        GLES20.glUniformMatrix4fv(lineMvp,1,false,mvp,0);
+        GLES20.glUniform4f(lineColor,0.18f,0.88f,1.0f,1.0f);
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST);
+        GLES20.glEnableVertexAttribArray(lineAttr);
+        for(ArrayList<float[]> stroke:strokes){
+            if(stroke.isEmpty())continue;
+            float[] points=new float[stroke.size()*3];
+            for(int i=0;i<stroke.size();i++){float[] p=stroke.get(i);System.arraycopy(p,0,points,i*3,3);}
+            FloatBuffer buffer=floatBuffer(points);
+            GLES20.glVertexAttribPointer(lineAttr,3,GLES20.GL_FLOAT,false,0,buffer);
+            GLES20.glDrawArrays(stroke.size()>1?GLES20.GL_LINE_STRIP:GLES20.GL_POINTS,0,stroke.size());
+        }
+        GLES20.glDisableVertexAttribArray(lineAttr);
+    }
     @Override protected void onPause() {
-        active = false;
+        active = false;penDown=false;
         if (session != null) session.pause();
         surface.onPause(); super.onPause();
     }
