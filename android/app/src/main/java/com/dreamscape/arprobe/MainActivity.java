@@ -53,6 +53,13 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
     private ArrayList<float[]> currentStroke = null;
     private float[] filteredTip=null;
     private int rejectedJumps=0;
+    private int consecutiveOutliers=0;
+    private long lastAcceptedTimeNs=0L;
+    private long previousFrameTimeNs=0L;
+    private boolean waitingForStablePose=false;
+    private float[] previousAcceptedRawTip=null;
+    private float[] previousFrameCameraPosition=null;
+    private volatile int stabilityRejected=0;
     private final ArrayList<Anchor> strokeAnchors = new ArrayList<>();
     private int lineProgram, lineAttr, lineMvp, lineColor;
     private volatile boolean markRequested=false,clearMarkersRequested=false;
@@ -98,7 +105,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(10),dp(6),dp(10),dp(6));
         TextView title = new TextView(this);
-        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.7 · 绘画优先");
+        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.8 · 稳定性优化");
         title.setTextSize(17);
         root.addView(title);
         status = new TextView(this);
@@ -287,30 +294,74 @@ Button undo=new Button(this);undo.setText("撤销");
             if(anchorMarker!=null && staticMarker!=null && anchorMarker.getTrackingState()==TrackingState.TRACKING){
                 markerSeparation=distance(staticMarker,anchorMarker.getPose().getTranslation());
             }
-            if(penDown && tracking) {
+            // A single relocalization jump must never become a visible stroke segment.
+            // Reject BEFORE filtering and before converting to anchor-local coordinates.
+            long frameTimeNs=f.getTimestamp();
+            boolean freshFrame=frameTimeNs>0 && frameTimeNs!=previousFrameTimeNs;
+            if(freshFrame)previousFrameTimeNs=frameTimeNs;
+            if(penDown && tracking && freshFrame) {
                 Pose tip=p.compose(Pose.makeTranslation(0f,0f,-0.42f));
-                float[] xyz=tip.getTranslation();
-                if(!previousPenDown || currentStroke==null) {
+                float[] raw=tip.getTranslation();
+                boolean newStroke=!previousPenDown || currentStroke==null;
+                if(newStroke){
                     currentStroke=new ArrayList<>();
-                    strokes.add(currentStroke);
-                    radii.add(brushRadius);
+                    strokes.add(currentStroke);radii.add(brushRadius);
                     strokeAnchors.add(session.createAnchor(tip));
-                    filteredTip=xyz.clone();
+                    filteredTip=raw.clone();
+                    previousAcceptedRawTip=raw.clone();
+                    lastAcceptedTimeNs=frameTimeNs;
+                    consecutiveOutliers=0;waitingForStablePose=false;
+                }else {
+                    float dt=Math.max(0.001f,Math.min(0.15f,(frameTimeNs-lastAcceptedTimeNs)*1e-9f));
+                    float step=distance(raw,previousAcceptedRawTip);
+                    // Generous movement envelope: 2.5 m/s plus 3 cm tolerance.
+                    // Treat sudden pose correction as an outlier rather than a pen move.
+                    float limit=0.03f+2.5f*dt;
+                    if(step>limit){
+                        rejectedJumps++;stabilityRejected=rejectedJumps;
+                        consecutiveOutliers++;waitingForStablePose=true;
+                        // Do not chase a bad sample. If several consecutive samples disagree,
+                        // end this stroke and wait for a fresh stable baseline.
+                        if(consecutiveOutliers>=3){
+                            currentStroke=null;filteredTip=null;
+                            previousAcceptedRawTip=null;
+                            previousPenDown=false;
+                        }
+                    }else{
+                        consecutiveOutliers=0;waitingForStablePose=false;
+                        if(filteredTip==null)filteredTip=raw.clone();
+                        // Adaptive smoothing: stronger on still hand, quicker when moving.
+                        float alpha=step<0.012f?0.18f:0.42f;
+                        for(int i=0;i<3;i++)filteredTip[i]+=alpha*(raw[i]-filteredTip[i]);
+                        Anchor anchor=strokeAnchors.get(strokeAnchors.size()-1);
+                        float[] local=anchor.getPose().inverse().transformPoint(filteredTip);
+                        if(currentStroke.isEmpty() || distance(currentStroke.get(currentStroke.size()-1),local)>0.004f){
+                            // Check local-space continuity too (anchor correction may move).
+                            float localStep=currentStroke.isEmpty()?0f:distance(currentStroke.get(currentStroke.size()-1),local);
+                            if(localStep<0.12f) currentStroke.add(local);
+                            else{
+                                rejectedJumps++;stabilityRejected=rejectedJumps;
+                                currentStroke=null;filteredTip=null;
+                                previousAcceptedRawTip=null;previousPenDown=false;
+                                waitingForStablePose=true;
+                            }
+                        }
+                        if(currentStroke!=null){
+                            previousAcceptedRawTip=raw.clone();
+                            lastAcceptedTimeNs=frameTimeNs;
+                        }
+                    }
                 }
-                if(filteredTip==null)filteredTip=xyz.clone();
-                // One-pole stabilization: suppress hand jitter but preserve deliberate movement.
-                for(int i=0;i<3;i++)filteredTip[i]+=0.35f*(xyz[i]-filteredTip[i]);
-                Anchor anchor=strokeAnchors.get(strokeAnchors.size()-1);
-                float[] local=anchor.getPose().inverse().transformPoint(filteredTip);
-                if(currentStroke.isEmpty() || distance(currentStroke.get(currentStroke.size()-1),local)>0.006f) {
-                    // Do not bridge sudden tracking jumps with a giant segment.
-                    if(currentStroke.isEmpty() || distance(currentStroke.get(currentStroke.size()-1),local)<0.18f)
-                        currentStroke.add(local);
-                    else {penDown=false;currentStroke=null;}
+                if(newStroke && currentStroke!=null){
+                    Anchor anchor=strokeAnchors.get(strokeAnchors.size()-1);
+                    currentStroke.add(anchor.getPose().inverse().transformPoint(filteredTip));
                 }
-            }else {currentStroke=null;filteredTip=null;}
+            }else if(!penDown || !tracking){
+                currentStroke=null;filteredTip=null;previousAcceptedRawTip=null;
+                consecutiveOutliers=0;waitingForStablePose=false;
+            }
+            previousPenDown=penDown && tracking && currentStroke!=null;
             liveTip=tracking?p.compose(Pose.makeTranslation(0f,0f,-0.42f)).getTranslation():null;
-            previousPenDown=penDown && tracking;
             if(tracking) {
                 c.getProjectionMatrix(projection,0,0.01f,100f);
                 c.getViewMatrix(viewMatrix,0);
@@ -322,6 +373,7 @@ Button undo=new Button(this);undo.setText("撤销");
             if (frames % 12 == 0) {
                 String s = String.format(Locale.US, "帧数：%d\n追踪状态：%s\nX: %.3f m\nY: %.3f m\nZ: %.3f m\n方向四元数: %.3f, %.3f, %.3f, %.3f",
                     frames, c.getTrackingState()+" / "+c.getTrackingFailureReason(), p.tx(), p.ty(), p.tz(), p.qx(), p.qy(), p.qz(), p.qw());
+                s+=String.format(Locale.US,"\n稳线拦截：%d 次%s",stabilityRejected,waitingForStablePose?" · 正在排除跳点":"");
                 if(staticMarker!=null) s+=String.format(Locale.US,"\n蓝点=固定世界坐标 / 黄点=Anchor\n两标记距离 %.1f cm",markerSeparation*100f);
                 if(diagnosticCameraOrigin!=null) s+=String.format(Locale.US,"\n模式：%s  |  相对起点：%.1f cm\n累计移动：%.1f cm  |  旋转：%.1f°\n追踪丢失帧：%d", diagnosticMode==1?"原地旋转":diagnosticMode==2?"水平移动":"未选择",diagnosticDisplacement*100f,cameraTravel*100f,cameraTurnDeg,trackingLostFrames);
                 say(s);
@@ -431,7 +483,7 @@ Button undo=new Button(this);undo.setText("撤销");
         GLES20.glDisableVertexAttribArray(lineAttr);
     }
     @Override protected void onPause() {
-        active = false;penDown=false;
+        active = false;penDown=false;previousPenDown=false;
         if (session != null) session.pause();
         surface.onPause(); super.onPause();
     }
