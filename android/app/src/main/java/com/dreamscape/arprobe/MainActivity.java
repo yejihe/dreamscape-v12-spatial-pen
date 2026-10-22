@@ -49,8 +49,6 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
     private float[] filteredTip=null;
     private int rejectedJumps=0;
     private final ArrayList<Anchor> strokeAnchors = new ArrayList<>();
-    private float[] filteredTip=null;
-    private float[] filteredTip = null;
     private int lineProgram, lineAttr, lineMvp, lineColor;
     private final float[] projection = new float[16], viewMatrix = new float[16], mvp = new float[16];
     private final FloatBuffer vertices = floatBuffer(new float[]{-1,-1, 1,-1, -1,1, 1,1});
@@ -239,13 +237,6 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         } catch (Exception e) { active = false; say("追踪失败：" + e.getClass().getSimpleName() + "\n" + e.getMessage()); }
     }
     private static float distance(float[] a,float[] b){float x=a[0]-b[0],y=a[1]-b[1],z=a[2]-b[2];return (float)Math.sqrt(x*x+y*y+z*z);}
-    private static float[] catmull(float[] a,float[] b,float[] c,float[] d,float t){
-        float[] p=new float[3];float t2=t*t,t3=t2*t;
-        for(int k=0;k<3;k++)p[k]=0.5f*((2*b[k])+(-a[k]+c[k])*t+
-              (2*a[k]-5*b[k]+4*c[k]-d[k])*t2+
-              (-a[k]+3*b[k]-3*c[k]+d[k])*t3);
-        return p;
-    }
     private static float[] catmull(float[] p0,float[] p1,float[] p2,float[] p3,float t){
         float[] v=new float[3];float t2=t*t,t3=t2*t;
         for(int i=0;i<3;i++)v[i]=0.5f*((2*p1[i])+(-p0[i]+p2[i])*t+(2*p0[i]-5*p1[i]+4*p2[i]-p3[i])*t2+(-p0[i]+3*p1[i]-3*p2[i]+p3[i])*t3);
