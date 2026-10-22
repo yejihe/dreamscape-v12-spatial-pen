@@ -24,6 +24,7 @@ import com.google.ar.core.ArCoreApk;
 import com.google.ar.core.Camera;
 import com.google.ar.core.Frame;
 import com.google.ar.core.Pose;
+import com.google.ar.core.Anchor;
 import com.google.ar.core.Session;
 import com.google.ar.core.TrackingState;
 import java.util.Locale;
@@ -45,6 +46,8 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
     private boolean previousPenDown = false;
     private final ArrayList<ArrayList<float[]>> strokes = new ArrayList<>();
     private ArrayList<float[]> currentStroke = null;
+    private final ArrayList<Anchor> strokeAnchors = new ArrayList<>();
+    private float[] filteredTip=null;
     private float[] filteredTip = null;
     private int lineProgram, lineAttr, lineMvp, lineColor;
     private final float[] projection = new float[16], viewMatrix = new float[16], mvp = new float[16];
@@ -113,9 +116,9 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
             return true;
         });
         Button undo=new Button(this);undo.setText("撤销");
-        undo.setOnClickListener(v->surface.queueEvent(()->{ if(!strokes.isEmpty())strokes.remove(strokes.size()-1);currentStroke=null;previousPenDown=false; }));
+        undo.setOnClickListener(v->surface.queueEvent(()->{ if(!strokes.isEmpty()){strokes.remove(strokes.size()-1);strokeAnchors.remove(strokeAnchors.size()-1).detach();}currentStroke=null;filteredTip=null;previousPenDown=false; }));
         Button clear=new Button(this);clear.setText("清空");
-        clear.setOnClickListener(v->surface.queueEvent(()->{strokes.clear();currentStroke=null;previousPenDown=false;}));
+        clear.setOnClickListener(v->surface.queueEvent(()->{for(Anchor a:strokeAnchors)a.detach();strokeAnchors.clear();strokes.clear();currentStroke=null;filteredTip=null;previousPenDown=false;}));
         toolbar.addView(draw,new LinearLayout.LayoutParams(-1,dp(76)));
         draw.setMinimumHeight(dp(76));
         LinearLayout actions=new LinearLayout(this);
@@ -198,36 +201,24 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
             Pose p = c.getPose();
             boolean tracking=c.getTrackingState()==TrackingState.TRACKING;
             if(penDown && tracking) {
-                // ARCore camera pose is world-from-camera. This is a provisional,
-                // configurable virtual tip, NOT a calibrated physical phone top.
                 Pose tip=p.compose(Pose.makeTranslation(0f,0.06f,-0.18f));
                 float[] xyz=tip.getTranslation();
                 if(!previousPenDown || currentStroke==null) {
-                    currentStroke=new ArrayList<>();strokes.add(currentStroke);
+                    currentStroke=new ArrayList<>();
+                    strokes.add(currentStroke);
+                    strokeAnchors.add(session.createAnchor(tip));
                     filteredTip=xyz.clone();
-                    currentStroke.add(filteredTip.clone());
-                } else {
-                    float step=distance(filteredTip,xyz);
-                    if(step>0.18f){ // Tracking jump: never connect discontinuous positions.
-                        currentStroke=new ArrayList<>();strokes.add(currentStroke);
-                        filteredTip=xyz.clone();currentStroke.add(filteredTip.clone());
-                    } else {
-                        // Low-pass filter avoids frame-to-frame AR jitter.
-                        for(int i=0;i<3;i++) filteredTip[i]+=0.38f*(xyz[i]-filteredTip[i]);
-                        float[] last=currentStroke.get(currentStroke.size()-1);
-                        float d=distance(last,filteredTip);
-                        if(d>=0.004f){
-                            int steps=Math.min(20,(int)Math.ceil(d/0.008f));
-                            for(int j=1;j<=steps;j++){
-                                float t=(float)j/steps;
-                                currentStroke.add(new float[]{
-                                    last[0]+(filteredTip[0]-last[0])*t,
-                                    last[1]+(filteredTip[1]-last[1])*t,
-                                    last[2]+(filteredTip[2]-last[2])*t
-                                });
-                            }
-                        }
-                    }
+                }
+                if(filteredTip==null)filteredTip=xyz.clone();
+                // One-pole stabilization: suppress hand jitter but preserve deliberate movement.
+                for(int i=0;i<3;i++)filteredTip[i]+=0.35f*(xyz[i]-filteredTip[i]);
+                Anchor anchor=strokeAnchors.get(strokeAnchors.size()-1);
+                float[] local=anchor.getPose().inverse().transformPoint(filteredTip);
+                if(currentStroke.isEmpty() || distance(currentStroke.get(currentStroke.size()-1),local)>0.006f) {
+                    // Do not bridge sudden tracking jumps with a giant segment.
+                    if(currentStroke.isEmpty() || distance(currentStroke.get(currentStroke.size()-1),local)<0.18f)
+                        currentStroke.add(local);
+                    else {penDown=false;currentStroke=null;}
                 }
             }else {currentStroke=null;filteredTip=null;}
             previousPenDown=penDown && tracking;
@@ -246,40 +237,54 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         } catch (Exception e) { active = false; say("追踪失败：" + e.getClass().getSimpleName() + "\n" + e.getMessage()); }
     }
     private static float distance(float[] a,float[] b){float x=a[0]-b[0],y=a[1]-b[1],z=a[2]-b[2];return (float)Math.sqrt(x*x+y*y+z*z);}
+    private static float[] catmull(float[] a,float[] b,float[] c,float[] d,float t){
+        float[] p=new float[3];float t2=t*t,t3=t2*t;
+        for(int k=0;k<3;k++)p[k]=0.5f*((2*b[k])+(-a[k]+c[k])*t+
+              (2*a[k]-5*b[k]+4*c[k]-d[k])*t2+
+              (-a[k]+3*b[k]-3*c[k]+d[k])*t3);
+        return p;
+    }
     private void renderStrokes(){
         GLES20.glUseProgram(lineProgram);
         GLES20.glUniformMatrix4fv(lineMvp,1,false,mvp,0);
         GLES20.glUniform4f(lineColor,0.18f,0.88f,1.0f,1.0f);
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glEnableVertexAttribArray(lineAttr);
-        float[] right={viewMatrix[0],viewMatrix[4],viewMatrix[8]};
-        float[] up={viewMatrix[1],viewMatrix[5],viewMatrix[9]};
-        for(ArrayList<float[]> stroke:strokes){
-            int n=stroke.size();
-            if(n<2)continue;
-            // One continuous triangle strip with shared joints (not overlapping rectangles).
-            // Mild miter join: helps prevent visible square seams and gaps.
-            float[] mesh=new float[n*6];
-            for(int i=0;i<n;i++){
-                float[] prev=stroke.get(Math.max(0,i-1));
-                float[] next=stroke.get(Math.min(n-1,i+1));
-                float tx=next[0]-prev[0],ty=next[1]-prev[1],tz=next[2]-prev[2];
-                float vx=tx*right[0]+ty*right[1]+tz*right[2];
-                float vy=tx*up[0]+ty*up[1]+tz*up[2];
-                float len=(float)Math.hypot(vx,vy);
-                if(len<0.00001f){vx=1;vy=0;len=1;}
-                float nx=-vy/len*0.010f,ny=vx/len*0.010f;
-                float ox=right[0]*nx+up[0]*ny;
-                float oy=right[1]*nx+up[1]*ny;
-                float oz=right[2]*nx+up[2]*ny;
-                float[] p=stroke.get(i);
-                int k=i*6;
-                mesh[k]=p[0]+ox;mesh[k+1]=p[1]+oy;mesh[k+2]=p[2]+oz;
-                mesh[k+3]=p[0]-ox;mesh[k+4]=p[1]-oy;mesh[k+5]=p[2]-oz;
+        for(int si=0;si<strokes.size();si++){
+            ArrayList<float[]> stroke=strokes.get(si);
+            if(stroke.isEmpty())continue;
+            Anchor anchor=strokeAnchors.get(si);
+            if(anchor.getTrackingState()!=TrackingState.TRACKING)continue;
+            Pose anchorPose=anchor.getPose();
+            ArrayList<float[]> pts=new ArrayList<>();
+            if(stroke.size()==1)pts.add(anchorPose.transformPoint(stroke.get(0)));
+            else{
+                for(int i=0;i<stroke.size()-1;i++){
+                    float[] a=stroke.get(Math.max(0,i-1));
+                    float[] b=stroke.get(i);
+                    float[] c=stroke.get(i+1);
+                    float[] d=stroke.get(Math.min(stroke.size()-1,i+2));
+                    for(int j=0;j<4;j++)pts.add(anchorPose.transformPoint(catmull(a,b,c,d,j/4f)));
+                }
+                pts.add(anchorPose.transformPoint(stroke.get(stroke.size()-1)));
             }
-            FloatBuffer strip=floatBuffer(mesh);
-            GLES20.glVertexAttribPointer(lineAttr,3,GLES20.GL_FLOAT,false,0,strip);
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,n*2);
+            // One continuous triangle strip. Shared joins + spline eliminate box-like seams.
+            float[] strip=new float[pts.size()*6];
+            for(int i=0;i<pts.size();i++){
+                float[] a=pts.get(Math.max(0,i-1)),b=pts.get(Math.min(pts.size()-1,i+1));
+                float tx=b[0]-a[0],ty=b[1]-a[1],tz=b[2]-a[2];
+                float[] p=pts.get(i);
+                float cx=viewMatrix[2],cy=viewMatrix[6],cz=viewMatrix[10];
+                float nx=ty*cz-tz*cy,ny=tz*cx-tx*cz,nz=tx*cy-ty*cx;
+                float len=(float)Math.sqrt(nx*nx+ny*ny+nz*nz);
+                if(len<0.00001f){nx=1;ny=0;nz=0;len=1;}
+                float k=0.008f/len;
+                strip[i*6]=p[0]+nx*k;strip[i*6+1]=p[1]+ny*k;strip[i*6+2]=p[2]+nz*k;
+                strip[i*6+3]=p[0]-nx*k;strip[i*6+4]=p[1]-ny*k;strip[i*6+5]=p[2]-nz*k;
+            }
+            FloatBuffer ribbon=floatBuffer(strip);
+            GLES20.glVertexAttribPointer(lineAttr,3,GLES20.GL_FLOAT,false,0,ribbon);
+            GLES20.glDrawArrays(pts.size()==1?GLES20.GL_POINTS:GLES20.GL_TRIANGLE_STRIP,0,pts.size()==1?1:pts.size()*2);
         }
         GLES20.glDisableVertexAttribArray(lineAttr);
     }
@@ -292,5 +297,5 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         super.onResume();
         if (session != null && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) begin();
     }
-    @Override protected void onDestroy() { active = false; if(session!=null){session.close();session=null;} super.onDestroy(); }
+    @Override protected void onDestroy() { active = false; if(session!=null){for(Anchor a:strokeAnchors)a.detach();strokeAnchors.clear();session.close();session=null;} super.onDestroy(); }
 }
