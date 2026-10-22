@@ -46,6 +46,8 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
     private boolean previousPenDown = false;
     private final ArrayList<ArrayList<float[]>> strokes = new ArrayList<>();
     private ArrayList<float[]> currentStroke = null;
+    private float[] filteredTip=null;
+    private int rejectedJumps=0;
     private final ArrayList<Anchor> strokeAnchors = new ArrayList<>();
     private float[] filteredTip=null;
     private float[] filteredTip = null;
@@ -244,47 +246,68 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
               (-a[k]+3*b[k]-3*c[k]+d[k])*t3);
         return p;
     }
+    private static float[] catmull(float[] p0,float[] p1,float[] p2,float[] p3,float t){
+        float[] v=new float[3];float t2=t*t,t3=t2*t;
+        for(int i=0;i<3;i++)v[i]=0.5f*((2*p1[i])+(-p0[i]+p2[i])*t+(2*p0[i]-5*p1[i]+4*p2[i]-p3[i])*t2+(-p0[i]+3*p1[i]-3*p2[i]+p3[i])*t3);
+        return v;
+    }
+    private static float[] cross(float[] a,float[] b){
+        return new float[]{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};
+    }
+    private static float[] normalize(float[] v){
+        float n=(float)Math.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
+        if(n<0.00001f)return new float[]{1,0,0};
+        return new float[]{v[0]/n,v[1]/n,v[2]/n};
+    }
+    private static float[] minus(float[] a,float[] b){return new float[]{a[0]-b[0],a[1]-b[1],a[2]-b[2]};}
     private void renderStrokes(){
         GLES20.glUseProgram(lineProgram);
         GLES20.glUniformMatrix4fv(lineMvp,1,false,mvp,0);
         GLES20.glUniform4f(lineColor,0.18f,0.88f,1.0f,1.0f);
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glEnableVertexAttribArray(lineAttr);
-        for(int si=0;si<strokes.size();si++){
-            ArrayList<float[]> stroke=strokes.get(si);
-            if(stroke.isEmpty())continue;
-            Anchor anchor=strokeAnchors.get(si);
-            if(anchor.getTrackingState()!=TrackingState.TRACKING)continue;
-            Pose anchorPose=anchor.getPose();
-            ArrayList<float[]> pts=new ArrayList<>();
-            if(stroke.size()==1)pts.add(anchorPose.transformPoint(stroke.get(0)));
-            else{
-                for(int i=0;i<stroke.size()-1;i++){
-                    float[] a=stroke.get(Math.max(0,i-1));
-                    float[] b=stroke.get(i);
-                    float[] c=stroke.get(i+1);
-                    float[] d=stroke.get(Math.min(stroke.size()-1,i+2));
-                    for(int j=0;j<4;j++)pts.add(anchorPose.transformPoint(catmull(a,b,c,d,j/4f)));
+        // Catmull-Rom interpolated centerline + continuous 8-sided round tube.
+        // Fixed world radius 6 mm; no detached rectangular segments.
+        final int sides=8; final float radius=0.006f;
+        for(ArrayList<float[]> stroke:strokes){
+            if(stroke.size()<2)continue;
+            ArrayList<float[]> path=new ArrayList<>();
+            for(int k=0;k<stroke.size()-1;k++){
+                float[] p0=stroke.get(Math.max(0,k-1)),p1=stroke.get(k);
+                float[] p2=stroke.get(k+1),p3=stroke.get(Math.min(stroke.size()-1,k+2));
+                int subdivisions=Math.max(2,Math.min(8,(int)(distance(p1,p2)/0.005f)));
+                for(int i=0;i<subdivisions;i++)path.add(catmull(p0,p1,p2,p3,(float)i/subdivisions));
+            }
+            path.add(stroke.get(stroke.size()-1));
+            float[] prevSide=null;
+            float[][] ringPrev=null;
+            for(int j=0;j<path.size();j++){
+                float[] tangent=normalize(minus(path.get(Math.min(j+1,path.size()-1)),path.get(Math.max(0,j-1))));
+                float[] ref=Math.abs(tangent[1])<0.85f?new float[]{0,1,0}:new float[]{1,0,0};
+                float[] side=normalize(cross(tangent,ref));
+                if(prevSide!=null && (side[0]*prevSide[0]+side[1]*prevSide[1]+side[2]*prevSide[2])<0)
+                    for(int q=0;q<3;q++)side[q]=-side[q];
+                float[] up=normalize(cross(tangent,side));
+                float[][] ring=new float[sides][3];
+                for(int q=0;q<sides;q++){
+                    double angle=2*Math.PI*q/sides;
+                    for(int h=0;h<3;h++)ring[q][h]=path.get(j)[h]+radius*(float)(Math.cos(angle)*side[h]+Math.sin(angle)*up[h]);
                 }
-                pts.add(anchorPose.transformPoint(stroke.get(stroke.size()-1)));
+                if(ringPrev!=null){
+                    // Build one connected smooth cylinder using triangles per ring pair.
+                    float[] triangles=new float[sides*6*3];int offset=0;
+                    for(int q=0;q<sides;q++){
+                        int next=(q+1)%sides;
+                        for(float[] p:new float[][]{ringPrev[q],ringPrev[next],ring[q],ring[q],ringPrev[next],ring[next]}){
+                            System.arraycopy(p,0,triangles,offset,3);offset+=3;
+                        }
+                    }
+                    FloatBuffer buffer=floatBuffer(triangles);
+                    GLES20.glVertexAttribPointer(lineAttr,3,GLES20.GL_FLOAT,false,0,buffer);
+                    GLES20.glDrawArrays(GLES20.GL_TRIANGLES,0,sides*6);
+                }
+                ringPrev=ring;prevSide=side;
             }
-            // One continuous triangle strip. Shared joins + spline eliminate box-like seams.
-            float[] strip=new float[pts.size()*6];
-            for(int i=0;i<pts.size();i++){
-                float[] a=pts.get(Math.max(0,i-1)),b=pts.get(Math.min(pts.size()-1,i+1));
-                float tx=b[0]-a[0],ty=b[1]-a[1],tz=b[2]-a[2];
-                float[] p=pts.get(i);
-                float cx=viewMatrix[2],cy=viewMatrix[6],cz=viewMatrix[10];
-                float nx=ty*cz-tz*cy,ny=tz*cx-tx*cz,nz=tx*cy-ty*cx;
-                float len=(float)Math.sqrt(nx*nx+ny*ny+nz*nz);
-                if(len<0.00001f){nx=1;ny=0;nz=0;len=1;}
-                float k=0.008f/len;
-                strip[i*6]=p[0]+nx*k;strip[i*6+1]=p[1]+ny*k;strip[i*6+2]=p[2]+nz*k;
-                strip[i*6+3]=p[0]-nx*k;strip[i*6+4]=p[1]-ny*k;strip[i*6+5]=p[2]-nz*k;
-            }
-            FloatBuffer ribbon=floatBuffer(strip);
-            GLES20.glVertexAttribPointer(lineAttr,3,GLES20.GL_FLOAT,false,0,ribbon);
-            GLES20.glDrawArrays(pts.size()==1?GLES20.GL_POINTS:GLES20.GL_TRIANGLE_STRIP,0,pts.size()==1?1:pts.size()*2);
         }
         GLES20.glDisableVertexAttribArray(lineAttr);
     }
