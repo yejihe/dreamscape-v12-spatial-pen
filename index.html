@@ -1,30 +1,43 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0b1020"><title>造梦计划 V12 · AR 兼容性检测</title>
 <style>html,body{margin:0;background:#0b1020;color:#f0f3ff;font-family:system-ui,sans-serif}main{max-width:700px;margin:auto;padding:24px 17px 90px}h1{font-size:1.7rem}.sub{color:#aebddd}.box{background:#171f36;border:1px solid #334365;border-radius:18px;margin:16px 0;padding:18px}button{background:#88a9ff;color:#101b35;border:0;border-radius:13px;padding:13px 18px;font-size:1rem;font-weight:700;margin:4px 5px 4px 0}button:disabled{opacity:.4}#log{white-space:pre-wrap;word-break:break-word;line-height:1.65}#coords{font:1rem/1.8 monospace}canvas{position:fixed;inset:0;width:100%;height:100%;display:none;z-index:1}#arPanel{display:none;position:fixed;top:env(safe-area-inset-top);left:8px;right:8px;z-index:2;background:#111b2dcc;border-radius:12px;padding:12px;pointer-events:none}#exit{pointer-events:auto}small{color:#b3c5ff}</style></head>
-<body><main><h1>🌌 造梦计划 · V12.0</h1><p class="sub">手机空间画笔｜真实 WebXR AR 兼容性与六自由度追踪测试（不模拟深度）</p>
-<div class="box"><h2>第一步 · 环境体检</h2><div id="log">尚未检测</div><button id="check">重新检测</button><button id="start" disabled>启动真实 AR 测试</button></div>
+<body><main><h1>🌌 造梦计划 · V12.0.1</h1><p class="sub">手机空间画笔｜真实 WebXR AR 兼容性与六自由度追踪测试（不模拟深度）</p>
+<div class="box"><h2>第一步 · 环境体检</h2><div id="log">尚未检测</div><button id="check">重新检测</button><p class="sub">逐个点击诊断按钮，每次启动都需要独立的用户手势：</p><button id="start" disabled>① 最简 AR</button><button id="local" disabled>② 请求 local</button><button id="overlay" disabled>③ 请求 local + DOM 覆盖层</button></div>
 <div class="box"><h2>第二步 · 追踪结果</h2><div id="coords">未进入 AR 会话</div><small>XYZ 为 XR viewer 参考姿态，并非手机顶端笔尖。只有得到有效帧后才会更新。数值不是绝对地理坐标。</small></div>
 <div class="box"><h2>第三步 · 导出报告</h2><button id="copy">复制检测报告</button><p class="sub">把报告发给安安，下一版再制作笔尖标定与真正的空间绘画。</p></div></main>
 <canvas id="xrCanvas"></canvas><div id="arPanel"><div id="arStatus">追踪初始化中…</div><button id="exit">退出 AR</button></div>
 <script>
 (()=>{'use strict';
-const el=id=>document.getElementById(id),log=el('log'),coords=el('coords'),start=el('start'),canvas=el('xrCanvas');
+const el=id=>document.getElementById(id),log=el('log'),coords=el('coords'),start=el('start'),canvas=el('xrCanvas'),buttons=['start','local','overlay'].map(el);
 let session=null,refSpace=null,viewerSpace=null,gl=null,frameCount=0,lastPose=null,report=[];
 function line(s){report.push(s);log.textContent=report.join('\n')}
-async function check(){report=[];start.disabled=true;line('安全上下文：'+(window.isSecureContext?'✅':'❌'));line('WebXR 接口：'+(navigator.xr?'✅':'❌'));line('浏览器：'+navigator.userAgent);if(!window.isSecureContext){line('需要 HTTPS 或 localhost');return}if(!navigator.xr){line('浏览器未暴露 navigator.xr；尝试更新 Android Chrome、检查 Google Play Services for AR。');return}
-try{const supported=await navigator.xr.isSessionSupported('immersive-ar');line('immersive-ar：'+(supported?'✅ 支持':'❌ 不支持'));start.disabled=!supported;if(!supported)line('设备支持 ARCore 不等于此浏览器支持 WebXR immersive-ar。')}catch(e){line('查询失败：'+e.name+' '+e.message)}}
-async function enter(){if(session)return;try{
-gl=canvas.getContext('webgl',{xrCompatible:true,alpha:true,antialias:true});if(!gl)throw new Error('无法创建 WebGL 上下文');await gl.makeXRCompatible();
-session=await navigator.xr.requestSession('immersive-ar',{requiredFeatures:['local'],optionalFeatures:['dom-overlay'],domOverlay:{root:el('arPanel')}});
-session.addEventListener('end',end);
-await session.updateRenderState({baseLayer:new XRWebGLLayer(session,gl, {alpha:true})});
-refSpace=await session.requestReferenceSpace('local');viewerSpace=await session.requestReferenceSpace('viewer');frameCount=0;canvas.style.display='block';el('arPanel').style.display='block';
-line('✅ AR 会话已启动；local 参考空间成功取得');session.requestAnimationFrame(onFrame);
-}catch(e){line('❌ AR 启动失败：'+e.name+' '+e.message);if(session){try{await session.end()}catch(_){}}end()}}
+async function check(){report=[];buttons.forEach(b=>b.disabled=true);line('安全上下文：'+(window.isSecureContext?'✅':'❌'));line('WebXR 接口：'+(navigator.xr?'✅':'❌'));line('浏览器：'+navigator.userAgent);if(!window.isSecureContext){line('需要 HTTPS 或 localhost');return}if(!navigator.xr){line('浏览器未暴露 navigator.xr；尝试更新 Android Chrome、检查 Google Play Services for AR。');return}
+try{const supported=await navigator.xr.isSessionSupported('immersive-ar');line('immersive-ar：'+(supported?'✅ 支持':'❌ 不支持'));buttons.forEach(b=>b.disabled=!supported);if(!supported)line('设备支持 ARCore 不等于此浏览器支持 WebXR immersive-ar。')}catch(e){line('查询失败：'+e.name+' '+e.message)}}
+async function enter(mode){
+if(session){line('请先退出当前 AR 会话');return}
+const label=['最简 AR','请求 local','local + DOM 覆盖层'][mode];
+let current=null;
+try{
+if(!gl){gl=canvas.getContext('webgl',{xrCompatible:true,alpha:true,antialias:true});if(!gl)throw new Error('无法创建 WebGL 上下文');await gl.makeXRCompatible()}
+const options=mode===0?{}:mode===1?{requiredFeatures:['local']}:{requiredFeatures:['local'],optionalFeatures:['dom-overlay'],domOverlay:{root:el('arPanel')}};
+line('开始测试：'+label);
+current=await navigator.xr.requestSession('immersive-ar',options);
+session=current;session.addEventListener('end',end);
+await session.updateRenderState({baseLayer:new XRWebGLLayer(session,gl,{alpha:true})});
+let referenceName='local';
+try{refSpace=await session.requestReferenceSpace('local')}catch(e){line('local 参考空间不可用：'+e.name+' '+e.message);referenceName='viewer';refSpace=await session.requestReferenceSpace('viewer')}
+frameCount=0;lastPose=null;canvas.style.display='block';el('arPanel').style.display='block';
+line('✅ '+label+' 会话启动成功；实际参考空间：'+referenceName);
+session.requestAnimationFrame(onFrame);
+}catch(e){line('❌ '+label+' 失败：'+e.name+' '+e.message);
+if(current){try{await current.end()}catch(_){}}
+if(!current||session!==current){session=null;refSpace=null;canvas.style.display='none';el('arPanel').style.display='none'}
+}
+}
 function onFrame(time,frame){if(!session)return;session.requestAnimationFrame(onFrame);try{const pose=frame.getViewerPose(refSpace);const layer=session.renderState.baseLayer;gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);gl.viewport(0,0,layer.framebufferWidth,layer.framebufferHeight);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
 if(pose){frameCount++;const p=pose.transform.position,q=pose.transform.orientation;lastPose=[p.x,p.y,p.z];const s='✅ 有效帧 '+frameCount+'\nX '+p.x.toFixed(3)+'m  Y '+p.y.toFixed(3)+'m  Z '+p.z.toFixed(3)+'m\n旋转四元数 '+[q.x,q.y,q.z,q.w].map(x=>x.toFixed(3)).join(', ');coords.textContent=s;el('arStatus').textContent=s;}else{el('arStatus').textContent='等待有效 XR 追踪姿态';}
 }catch(e){el('arStatus').textContent='帧错误：'+e.message;}}
 function end(){session=null;refSpace=null;viewerSpace=null;canvas.style.display='none';el('arPanel').style.display='none';line('AR 会话结束；有效帧 '+frameCount+(lastPose?'；末次坐标 '+lastPose.map(x=>x.toFixed(3)).join(', '):'；未获得有效姿态'));}
-el('check').onclick=check;start.onclick=enter;el('exit').onclick=()=>session?.end();el('copy').onclick=async()=>{const s=report.join('\n')+'\n追踪状态：'+coords.textContent;try{await navigator.clipboard.writeText(s);alert('报告已复制')}catch(e){prompt('请长按复制报告',s)}};check();
+el('check').onclick=check;buttons.forEach((b,i)=>b.onclick=()=>enter(i));el('exit').onclick=()=>session?.end();el('copy').onclick=async()=>{const s=report.join('\n')+'\n追踪状态：'+coords.textContent;try{await navigator.clipboard.writeText(s);alert('报告已复制')}catch(e){prompt('请长按复制报告',s)}};check();
 })();
 </script></body></html>
