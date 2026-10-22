@@ -59,6 +59,12 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
     private float[] staticMarker=null;
     private Anchor anchorMarker=null;
     private float markerSeparation=0f;
+    private Pose diagnosticCameraOrigin=null;
+    private volatile boolean baselineRequested=false;
+    private volatile int diagnosticMode=0;
+    private float cameraTravel=0f, cameraTurnDeg=0f, diagnosticDisplacement=0f;
+    private int trackingLostFrames=0;
+    private float[] previousCameraPoint=null;
     private final float[] projection = new float[16], viewMatrix = new float[16], mvp = new float[16];
     private final FloatBuffer vertices = floatBuffer(new float[]{-1,-1, 1,-1, -1,1, 1,1});
     private final FloatBuffer texcoords = floatBuffer(new float[8]);
@@ -91,7 +97,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(10),dp(6),dp(10),dp(6));
         TextView title = new TextView(this);
-        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.5 · 稳定性诊断");
+        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.6 · 漂移分析");
         title.setTextSize(17);
         root.addView(title);
         status = new TextView(this);
@@ -151,6 +157,17 @@ Button undo=new Button(this);undo.setText("撤销");
         diagnostics.addView(mark,new LinearLayout.LayoutParams(0,dp(48),2));
         diagnostics.addView(resetMarks,new LinearLayout.LayoutParams(0,dp(48),1));
         toolbar.addView(diagnostics);
+        LinearLayout modeRow=new LinearLayout(this);
+        Button rotate=new Button(this);rotate.setText("① 原地旋转");
+        Button translate=new Button(this);translate.setText("② 水平移动");
+        Button resetPose=new Button(this);resetPose.setText("重设起点");
+        rotate.setOnClickListener(v->{diagnosticMode=1;baselineRequested=true;rotate.setEnabled(false);translate.setEnabled(true);});
+        translate.setOnClickListener(v->{diagnosticMode=2;baselineRequested=true;rotate.setEnabled(true);translate.setEnabled(false);});
+        resetPose.setOnClickListener(v->{baselineRequested=true;});
+        modeRow.addView(rotate,new LinearLayout.LayoutParams(0,dp(45),1));
+        modeRow.addView(translate,new LinearLayout.LayoutParams(0,dp(45),1));
+        modeRow.addView(resetPose,new LinearLayout.LayoutParams(0,dp(45),1));
+        toolbar.addView(modeRow);
         surface = new GLSurfaceView(this);
         surface.setEGLContextClientVersion(2);
         surface.setRenderer(this);
@@ -226,6 +243,23 @@ Button undo=new Button(this);undo.setText("撤销");
             Camera c = f.getCamera();
             Pose p = c.getPose();
             boolean tracking=c.getTrackingState()==TrackingState.TRACKING;
+            if(!tracking)trackingLostFrames++;
+            if(baselineRequested && tracking){
+                baselineRequested=false;
+                diagnosticCameraOrigin=p;
+                cameraTravel=0f;cameraTurnDeg=0f;trackingLostFrames=0;
+                previousCameraPoint=p.getTranslation().clone();
+            }
+            if(tracking && diagnosticCameraOrigin!=null){
+                float[] t=p.getTranslation();
+                if(previousCameraPoint!=null)cameraTravel+=distance(t,previousCameraPoint);
+                previousCameraPoint=t.clone();
+                diagnosticDisplacement=distance(t,diagnosticCameraOrigin.getTranslation());
+                float[] qa=diagnosticCameraOrigin.getRotationQuaternion();
+                float[] qb=p.getRotationQuaternion();
+                float dot=Math.abs(qa[0]*qb[0]+qa[1]*qb[1]+qa[2]*qb[2]+qa[3]*qb[3]);
+                cameraTurnDeg=(float)(Math.acos(Math.min(1.0f,dot))*360/Math.PI);
+            }else if(!tracking){previousCameraPoint=null;}
             if(clearMarkersRequested){
                 clearMarkersRequested=false;markRequested=false;
                 if(anchorMarker!=null){anchorMarker.detach();anchorMarker=null;}
