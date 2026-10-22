@@ -31,6 +31,9 @@ import java.util.Locale;
 public final class MainActivity extends Activity implements GLSurfaceView.Renderer {
     private GLSurfaceView surface;
     private TextView status;
+    private boolean expandedStatus=false;
+    private Button startButton;
+    private int dp(float v){return (int)(v*getResources().getDisplayMetrics().density+0.5f);}
     private Session session;
     private volatile String message = "未启动";
     private volatile boolean active = false;
@@ -58,25 +61,36 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         GLES20.glDisableVertexAttribArray(posAttr);GLES20.glDisableVertexAttribArray(uvAttr);
     }
 
-    private void say(String s) { message = s; runOnUiThread(() -> status.setText(message)); }
+    private void say(String s) {
+        message=s;
+        runOnUiThread(()->{
+            if(status!=null){
+                String[] parts=message.split("\\n");
+                String track="";
+                for(String line:parts) if(line.startsWith("追踪状态：")) {track=line;break;}
+                status.setText(expandedStatus || track.isEmpty()?message:track+"  ·  点击展开数据");
+            }
+        });
+    }
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(20, 28, 20, 20);
+        root.setPadding(dp(10),dp(6),dp(10),dp(6));
         TextView title = new TextView(this);
-        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.1\n按住画线 · 松开停笔 · 移动手机观察");
-        title.setTextSize(18);
+        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.2");
+        title.setTextSize(17);
         root.addView(title);
         status = new TextView(this);
-        status.setTextSize(16); status.setText(message);
+        status.setTextSize(14); status.setText(message);status.setMaxLines(10);
+        status.setOnClickListener(v->{expandedStatus=!expandedStatus;say(message);});
         root.addView(status);
-        Button start = new Button(this); start.setText("检查并启动 ARCore");
+        Button start = new Button(this);startButton=start; start.setText("启动 ARCore");
         root.addView(start);
         start.setOnClickListener(v -> begin());
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setOrientation(LinearLayout.VERTICAL);
-        toolbar.setPadding(8,8,8,12);
+        toolbar.setPadding(dp(4),dp(4),dp(4),dp(4));
         Button draw = new Button(this); draw.setText("●  按住绘画");
         draw.setTextSize(23);
         draw.setTypeface(null,Typeface.BOLD);
@@ -101,9 +115,10 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         undo.setOnClickListener(v->surface.queueEvent(()->{ if(!strokes.isEmpty())strokes.remove(strokes.size()-1);currentStroke=null;previousPenDown=false; }));
         Button clear=new Button(this);clear.setText("清空");
         clear.setOnClickListener(v->surface.queueEvent(()->{strokes.clear();currentStroke=null;previousPenDown=false;}));
-        toolbar.addView(draw,new LinearLayout.LayoutParams(-1,88));
+        toolbar.addView(draw,new LinearLayout.LayoutParams(-1,dp(76)));
+        draw.setMinimumHeight(dp(76));
         LinearLayout actions=new LinearLayout(this);
-        actions.addView(undo,new LinearLayout.LayoutParams(0,58,1));
+        actions.addView(undo,new LinearLayout.LayoutParams(0,dp(49),1));
         actions.addView(clear,new LinearLayout.LayoutParams(0,58,1));
         toolbar.addView(actions);
         surface = new GLSurfaceView(this);
@@ -113,7 +128,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         root.addView(surface, new LinearLayout.LayoutParams(-1, 0, 1));
         root.addView(toolbar);
         setContentView(root);
-        say("先启动 ARCore；TRACKING 后按住按钮移动手机绘画。笔尖暂以相机前上方偏移估计，尚未做顶部实体标定。");
+        say("启动 ARCore 后，按住底部按钮绘画；点击追踪状态可查看详细数据。");
     }
     private void begin() {
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
@@ -132,6 +147,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
             active = true;
             surface.onResume();
             session.resume();
+            startButton.setVisibility(View.GONE);
             say("会话已创建；尝试获取 TRACKING 帧…");
         } catch (Exception e) {
             active = false;
