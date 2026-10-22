@@ -57,6 +57,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
     private long lastAcceptedTimeNs=0L;
     private long previousFrameTimeNs=0L;
     private boolean waitingForStablePose=false;
+    private boolean strokeBlockedUntilRelease=false;
     private float[] previousAcceptedRawTip=null;
     private float[] previousFrameCameraPosition=null;
     private volatile int stabilityRejected=0;
@@ -105,7 +106,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(10),dp(6),dp(10),dp(6));
         TextView title = new TextView(this);
-        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.8 · 稳定性优化");
+        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.9 · 轨迹连续性");
         title.setTextSize(17);
         root.addView(title);
         status = new TextView(this);
@@ -148,9 +149,9 @@ public void onStopTrackingTouch(SeekBar b){}
 });
 toolbar.addView(brushText);toolbar.addView(brushSize,new LinearLayout.LayoutParams(-1,dp(38)));
 Button undo=new Button(this);undo.setText("撤销");
-        undo.setOnClickListener(v->surface.queueEvent(()->{ if(!strokes.isEmpty()){strokes.remove(strokes.size()-1);radii.remove(radii.size()-1);strokeAnchors.remove(strokeAnchors.size()-1).detach();}currentStroke=null;filteredTip=null;previousPenDown=false; }));
+        undo.setOnClickListener(v->surface.queueEvent(()->{ if(!strokes.isEmpty()){strokes.remove(strokes.size()-1);radii.remove(radii.size()-1);strokeAnchors.remove(strokeAnchors.size()-1).detach();}currentStroke=null;filteredTip=null;previousPenDown=false;strokeBlockedUntilRelease=false; }));
         Button clear=new Button(this);clear.setText("清空");
-        clear.setOnClickListener(v->surface.queueEvent(()->{for(Anchor a:strokeAnchors)a.detach();strokeAnchors.clear();strokes.clear();radii.clear();currentStroke=null;filteredTip=null;previousPenDown=false;}));
+        clear.setOnClickListener(v->surface.queueEvent(()->{for(Anchor a:strokeAnchors)a.detach();strokeAnchors.clear();strokes.clear();radii.clear();currentStroke=null;filteredTip=null;previousPenDown=false;strokeBlockedUntilRelease=false;}));
         toolbar.addView(draw,new LinearLayout.LayoutParams(-1,dp(76)));
         draw.setMinimumHeight(dp(76));
         LinearLayout actions=new LinearLayout(this);
@@ -299,68 +300,59 @@ Button undo=new Button(this);undo.setText("撤销");
             long frameTimeNs=f.getTimestamp();
             boolean freshFrame=frameTimeNs>0 && frameTimeNs!=previousFrameTimeNs;
             if(freshFrame)previousFrameTimeNs=frameTimeNs;
-            if(penDown && tracking && freshFrame) {
+            // Never restart an interrupted stroke until the finger is released.
+            if(!penDown) strokeBlockedUntilRelease=false;
+            if(penDown && !tracking) {
+                strokeBlockedUntilRelease=true;
+                waitingForStablePose=true;
+            }
+            if(penDown && tracking && freshFrame && !strokeBlockedUntilRelease){
                 Pose tip=p.compose(Pose.makeTranslation(0f,0f,-0.42f));
                 float[] raw=tip.getTranslation();
                 boolean newStroke=!previousPenDown || currentStroke==null;
                 if(newStroke){
                     currentStroke=new ArrayList<>();
                     strokes.add(currentStroke);radii.add(brushRadius);
-                    strokeAnchors.add(session.createAnchor(tip));
-                    filteredTip=raw.clone();
+                    Anchor anchor=session.createAnchor(tip);
+                    strokeAnchors.add(anchor);
+                    float[] local=anchor.getPose().inverse().transformPoint(raw);
+                    filteredTip=local.clone();
+                    currentStroke.add(local.clone());
                     previousAcceptedRawTip=raw.clone();
                     lastAcceptedTimeNs=frameTimeNs;
                     consecutiveOutliers=0;waitingForStablePose=false;
-                }else {
+                }else{
+                    Anchor anchor=strokeAnchors.get(strokeAnchors.size()-1);
+                    float[] local=anchor.getPose().inverse().transformPoint(raw);
                     float dt=Math.max(0.001f,Math.min(0.15f,(frameTimeNs-lastAcceptedTimeNs)*1e-9f));
                     float step=distance(raw,previousAcceptedRawTip);
-                    // Generous movement envelope: 2.5 m/s plus 3 cm tolerance.
-                    // Treat sudden pose correction as an outlier rather than a pen move.
+                    float localStep=distance(local,filteredTip);
                     float limit=0.03f+2.5f*dt;
-                    if(step>limit){
+                    if(step>limit || localStep>Math.max(0.12f,limit+0.04f)){
                         rejectedJumps++;stabilityRejected=rejectedJumps;
                         consecutiveOutliers++;waitingForStablePose=true;
-                        // Do not chase a bad sample. If several consecutive samples disagree,
-                        // end this stroke and wait for a fresh stable baseline.
                         if(consecutiveOutliers>=3){
                             currentStroke=null;filteredTip=null;
                             previousAcceptedRawTip=null;
-                            previousPenDown=false;
+                            strokeBlockedUntilRelease=true;
                         }
                     }else{
                         consecutiveOutliers=0;waitingForStablePose=false;
-                        if(filteredTip==null)filteredTip=raw.clone();
-                        // Adaptive smoothing: stronger on still hand, quicker when moving.
-                        float alpha=step<0.012f?0.18f:0.42f;
-                        for(int i=0;i<3;i++)filteredTip[i]+=alpha*(raw[i]-filteredTip[i]);
-                        Anchor anchor=strokeAnchors.get(strokeAnchors.size()-1);
-                        float[] local=anchor.getPose().inverse().transformPoint(filteredTip);
-                        if(currentStroke.isEmpty() || distance(currentStroke.get(currentStroke.size()-1),local)>0.004f){
-                            // Check local-space continuity too (anchor correction may move).
-                            float localStep=currentStroke.isEmpty()?0f:distance(currentStroke.get(currentStroke.size()-1),local);
-                            if(localStep<0.12f) currentStroke.add(local);
-                            else{
-                                rejectedJumps++;stabilityRejected=rejectedJumps;
-                                currentStroke=null;filteredTip=null;
-                                previousAcceptedRawTip=null;previousPenDown=false;
-                                waitingForStablePose=true;
-                            }
-                        }
-                        if(currentStroke!=null){
-                            previousAcceptedRawTip=raw.clone();
-                            lastAcceptedTimeNs=frameTimeNs;
-                        }
+                        float alpha=localStep<0.012f?0.18f:0.42f;
+                        for(int i=0;i<3;i++)filteredTip[i]+=alpha*(local[i]-filteredTip[i]);
+                        float[] point=filteredTip.clone();
+                        if(distance(currentStroke.get(currentStroke.size()-1),point)>0.004f)
+                            currentStroke.add(point);
+                        previousAcceptedRawTip=raw.clone();
+                        lastAcceptedTimeNs=frameTimeNs;
                     }
-                }
-                if(newStroke && currentStroke!=null){
-                    Anchor anchor=strokeAnchors.get(strokeAnchors.size()-1);
-                    currentStroke.add(anchor.getPose().inverse().transformPoint(filteredTip));
                 }
             }else if(!penDown || !tracking){
                 currentStroke=null;filteredTip=null;previousAcceptedRawTip=null;
-                consecutiveOutliers=0;waitingForStablePose=false;
+                consecutiveOutliers=0;
+                if(!penDown)waitingForStablePose=false;
             }
-            previousPenDown=penDown && tracking && currentStroke!=null;
+            previousPenDown=penDown && tracking && currentStroke!=null && !strokeBlockedUntilRelease;
             liveTip=tracking?p.compose(Pose.makeTranslation(0f,0f,-0.42f)).getTranslation():null;
             if(tracking) {
                 c.getProjectionMatrix(projection,0,0.01f,100f);
