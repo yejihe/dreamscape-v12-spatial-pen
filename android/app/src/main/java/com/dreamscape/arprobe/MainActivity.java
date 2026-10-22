@@ -45,6 +45,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
     private boolean previousPenDown = false;
     private final ArrayList<ArrayList<float[]>> strokes = new ArrayList<>();
     private ArrayList<float[]> currentStroke = null;
+    private float[] filteredTip = null;
     private int lineProgram, lineAttr, lineMvp, lineColor;
     private final float[] projection = new float[16], viewMatrix = new float[16], mvp = new float[16];
     private final FloatBuffer vertices = floatBuffer(new float[]{-1,-1, 1,-1, -1,1, 1,1});
@@ -78,7 +79,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(10),dp(6),dp(10),dp(6));
         TextView title = new TextView(this);
-        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.2");
+        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.3");
         title.setTextSize(17);
         root.addView(title);
         status = new TextView(this);
@@ -203,9 +204,32 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
                 float[] xyz=tip.getTranslation();
                 if(!previousPenDown || currentStroke==null) {
                     currentStroke=new ArrayList<>();strokes.add(currentStroke);
+                    filteredTip=xyz.clone();
+                    currentStroke.add(filteredTip.clone());
+                } else {
+                    float step=distance(filteredTip,xyz);
+                    if(step>0.18f){ // Tracking jump: never connect discontinuous positions.
+                        currentStroke=new ArrayList<>();strokes.add(currentStroke);
+                        filteredTip=xyz.clone();currentStroke.add(filteredTip.clone());
+                    } else {
+                        // Low-pass filter avoids frame-to-frame AR jitter.
+                        for(int i=0;i<3;i++) filteredTip[i]+=0.38f*(xyz[i]-filteredTip[i]);
+                        float[] last=currentStroke.get(currentStroke.size()-1);
+                        float d=distance(last,filteredTip);
+                        if(d>=0.004f){
+                            int steps=Math.min(20,(int)Math.ceil(d/0.008f));
+                            for(int j=1;j<=steps;j++){
+                                float t=(float)j/steps;
+                                currentStroke.add(new float[]{
+                                    last[0]+(filteredTip[0]-last[0])*t,
+                                    last[1]+(filteredTip[1]-last[1])*t,
+                                    last[2]+(filteredTip[2]-last[2])*t
+                                });
+                            }
+                        }
+                    }
                 }
-                if(currentStroke.isEmpty() || distance(currentStroke.get(currentStroke.size()-1),xyz)>0.008f) currentStroke.add(xyz);
-            }else {currentStroke=null;}
+            }else {currentStroke=null;filteredTip=null;}
             previousPenDown=penDown && tracking;
             if(tracking) {
                 c.getProjectionMatrix(projection,0,0.01f,100f);
@@ -228,40 +252,34 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         GLES20.glUniform4f(lineColor,0.18f,0.88f,1.0f,1.0f);
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glEnableVertexAttribArray(lineAttr);
+        float[] right={viewMatrix[0],viewMatrix[4],viewMatrix[8]};
+        float[] up={viewMatrix[1],viewMatrix[5],viewMatrix[9]};
         for(ArrayList<float[]> stroke:strokes){
-            if(stroke.isEmpty())continue;
-            // World-space billboard ribbon; GL_LINE_WIDTH is unreliable on mobile OpenGL ES.
-            float[] cameraRight={viewMatrix[0],viewMatrix[4],viewMatrix[8]};
-            float[] cameraUp={viewMatrix[1],viewMatrix[5],viewMatrix[9]};
-            if(stroke.size()==1){
-                float[] p=stroke.get(0);
-                FloatBuffer buffer=floatBuffer(new float[]{p[0],p[1],p[2]});
-                GLES20.glVertexAttribPointer(lineAttr,3,GLES20.GL_FLOAT,false,0,buffer);
-                GLES20.glDrawArrays(GLES20.GL_POINTS,0,1);
-                continue;
+            int n=stroke.size();
+            if(n<2)continue;
+            // One continuous triangle strip with shared joints (not overlapping rectangles).
+            // Mild miter join: helps prevent visible square seams and gaps.
+            float[] mesh=new float[n*6];
+            for(int i=0;i<n;i++){
+                float[] prev=stroke.get(Math.max(0,i-1));
+                float[] next=stroke.get(Math.min(n-1,i+1));
+                float tx=next[0]-prev[0],ty=next[1]-prev[1],tz=next[2]-prev[2];
+                float vx=tx*right[0]+ty*right[1]+tz*right[2];
+                float vy=tx*up[0]+ty*up[1]+tz*up[2];
+                float len=(float)Math.hypot(vx,vy);
+                if(len<0.00001f){vx=1;vy=0;len=1;}
+                float nx=-vy/len*0.010f,ny=vx/len*0.010f;
+                float ox=right[0]*nx+up[0]*ny;
+                float oy=right[1]*nx+up[1]*ny;
+                float oz=right[2]*nx+up[2]*ny;
+                float[] p=stroke.get(i);
+                int k=i*6;
+                mesh[k]=p[0]+ox;mesh[k+1]=p[1]+oy;mesh[k+2]=p[2]+oz;
+                mesh[k+3]=p[0]-ox;mesh[k+4]=p[1]-oy;mesh[k+5]=p[2]-oz;
             }
-            for(int k=1;k<stroke.size();k++){
-                float[] a=stroke.get(k-1),b=stroke.get(k);
-                float dx=b[0]-a[0],dy=b[1]-a[1],dz=b[2]-a[2];
-                float vx=dx*cameraRight[0]+dy*cameraRight[1]+dz*cameraRight[2];
-                float vy=dx*cameraUp[0]+dy*cameraUp[1]+dz*cameraUp[2];
-                float length=(float)Math.sqrt(vx*vx+vy*vy);
-                if(length<0.00001f)continue;
-                // Approx. 16 mm stroke diameter, visibly thicker than GL_LINES.
-                float halfWidth=0.008f;
-                float nx=(-vy/length)*halfWidth, ny=(vx/length)*halfWidth;
-                float ox=cameraRight[0]*nx+cameraUp[0]*ny;
-                float oy=cameraRight[1]*nx+cameraUp[1]*ny;
-                float oz=cameraRight[2]*nx+cameraUp[2]*ny;
-                FloatBuffer ribbon=floatBuffer(new float[]{
-                    a[0]+ox,a[1]+oy,a[2]+oz,
-                    a[0]-ox,a[1]-oy,a[2]-oz,
-                    b[0]+ox,b[1]+oy,b[2]+oz,
-                    b[0]-ox,b[1]-oy,b[2]-oz
-                });
-                GLES20.glVertexAttribPointer(lineAttr,3,GLES20.GL_FLOAT,false,0,ribbon);
-                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4);
-            }
+            FloatBuffer strip=floatBuffer(mesh);
+            GLES20.glVertexAttribPointer(lineAttr,3,GLES20.GL_FLOAT,false,0,strip);
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,n*2);
         }
         GLES20.glDisableVertexAttribArray(lineAttr);
     }
