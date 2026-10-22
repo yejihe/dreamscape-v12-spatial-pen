@@ -55,6 +55,10 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
     private int rejectedJumps=0;
     private final ArrayList<Anchor> strokeAnchors = new ArrayList<>();
     private int lineProgram, lineAttr, lineMvp, lineColor;
+    private volatile boolean markRequested=false,clearMarkersRequested=false;
+    private float[] staticMarker=null;
+    private Anchor anchorMarker=null;
+    private float markerSeparation=0f;
     private final float[] projection = new float[16], viewMatrix = new float[16], mvp = new float[16];
     private final FloatBuffer vertices = floatBuffer(new float[]{-1,-1, 1,-1, -1,1, 1,1});
     private final FloatBuffer texcoords = floatBuffer(new float[8]);
@@ -87,7 +91,7 @@ public final class MainActivity extends Activity implements GLSurfaceView.Render
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(10),dp(6),dp(10),dp(6));
         TextView title = new TextView(this);
-        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.4");
+        title.setText("🌌 Dreamscape V12 · 空间画笔 v0.3.5 · 稳定性诊断");
         title.setTextSize(17);
         root.addView(title);
         status = new TextView(this);
@@ -139,6 +143,14 @@ Button undo=new Button(this);undo.setText("撤销");
         actions.addView(undo,new LinearLayout.LayoutParams(0,dp(49),1));
         actions.addView(clear,new LinearLayout.LayoutParams(0,58,1));
         toolbar.addView(actions);
+        LinearLayout diagnostics=new LinearLayout(this);
+        Button mark=new Button(this); mark.setText("放置对照标记");
+        mark.setOnClickListener(v->{markRequested=true;});
+        Button resetMarks=new Button(this);resetMarks.setText("重置标记");
+        resetMarks.setOnClickListener(v->{clearMarkersRequested=true;});
+        diagnostics.addView(mark,new LinearLayout.LayoutParams(0,dp(48),2));
+        diagnostics.addView(resetMarks,new LinearLayout.LayoutParams(0,dp(48),1));
+        toolbar.addView(diagnostics);
         surface = new GLSurfaceView(this);
         surface.setEGLContextClientVersion(2);
         surface.setRenderer(this);
@@ -214,6 +226,21 @@ Button undo=new Button(this);undo.setText("撤销");
             Camera c = f.getCamera();
             Pose p = c.getPose();
             boolean tracking=c.getTrackingState()==TrackingState.TRACKING;
+            if(clearMarkersRequested){
+                clearMarkersRequested=false;markRequested=false;
+                if(anchorMarker!=null){anchorMarker.detach();anchorMarker=null;}
+                staticMarker=null;markerSeparation=0f;
+            }
+            if(markRequested && tracking){
+                markRequested=false;
+                if(anchorMarker!=null)anchorMarker.detach();
+                Pose at=p.compose(Pose.makeTranslation(0f,0f,-0.65f));
+                staticMarker=at.getTranslation().clone();
+                anchorMarker=session.createAnchor(at);
+            }
+            if(anchorMarker!=null && staticMarker!=null && anchorMarker.getTrackingState()==TrackingState.TRACKING){
+                markerSeparation=distance(staticMarker,anchorMarker.getPose().getTranslation());
+            }
             if(penDown && tracking) {
                 Pose tip=p.compose(Pose.makeTranslation(0f,0f,-0.42f));
                 float[] xyz=tip.getTranslation();
@@ -243,11 +270,13 @@ Button undo=new Button(this);undo.setText("撤销");
                 c.getViewMatrix(viewMatrix,0);
                 Matrix.multiplyMM(mvp,0,projection,0,viewMatrix,0);
                 renderStrokes();
+                renderMarkers();
             }
             frames++;
             if (frames % 12 == 0) {
                 String s = String.format(Locale.US, "帧数：%d\n追踪状态：%s\nX: %.3f m\nY: %.3f m\nZ: %.3f m\n方向四元数: %.3f, %.3f, %.3f, %.3f",
                     frames, c.getTrackingState()+" / "+c.getTrackingFailureReason(), p.tx(), p.ty(), p.tz(), p.qx(), p.qy(), p.qz(), p.qw());
+                if(staticMarker!=null) s+=String.format(Locale.US,"\n蓝点=固定世界坐标 / 黄点=Anchor\n两标记距离 %.1f cm",markerSeparation*100f);
                 say(s);
             }
         } catch (Exception e) { active = false; say("追踪失败：" + e.getClass().getSimpleName() + "\n" + e.getMessage()); }
@@ -332,6 +361,28 @@ Button undo=new Button(this);undo.setText("撤销");
         }
         GLES20.glDisableVertexAttribArray(lineAttr);
     }
+    private void renderMarkers(){
+        if(staticMarker==null)return;
+        GLES20.glUseProgram(lineProgram);
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST);
+        GLES20.glUniformMatrix4fv(lineMvp,1,false,mvp,0);
+        GLES20.glEnableVertexAttribArray(lineAttr);
+        // Two markers start at same world position. Slight screen-side displacement
+        // is ONLY for visual distinction: compare their motion against real objects.
+        float[] blue=staticMarker;
+        FloatBuffer b=floatBuffer(blue);
+        GLES20.glVertexAttribPointer(lineAttr,3,GLES20.GL_FLOAT,false,0,b);
+        GLES20.glUniform4f(lineColor,0.05f,0.45f,1f,1f);
+        GLES20.glDrawArrays(GLES20.GL_POINTS,0,1);
+        if(anchorMarker!=null && anchorMarker.getTrackingState()==TrackingState.TRACKING){
+            float[] yellow=anchorMarker.getPose().getTranslation();
+            FloatBuffer y=floatBuffer(yellow);
+            GLES20.glVertexAttribPointer(lineAttr,3,GLES20.GL_FLOAT,false,0,y);
+            GLES20.glUniform4f(lineColor,1f,0.85f,0.08f,1f);
+            GLES20.glDrawArrays(GLES20.GL_POINTS,0,1);
+        }
+        GLES20.glDisableVertexAttribArray(lineAttr);
+    }
     @Override protected void onPause() {
         active = false;penDown=false;
         if (session != null) session.pause();
@@ -341,5 +392,5 @@ Button undo=new Button(this);undo.setText("撤销");
         super.onResume();
         if (session != null && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) begin();
     }
-    @Override protected void onDestroy() { active = false; if(session!=null){for(Anchor a:strokeAnchors)a.detach();strokeAnchors.clear();session.close();session=null;} super.onDestroy(); }
+    @Override protected void onDestroy() { active = false; if(session!=null){for(Anchor a:strokeAnchors)a.detach();strokeAnchors.clear();if(anchorMarker!=null)anchorMarker.detach();session.close();session=null;} super.onDestroy(); }
 }
