@@ -1,0 +1,40 @@
+name: Vendor Hand Tracking Assets
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/vendor-hand-tracking.yml'
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Download pinned MediaPipe assets
+        run: |
+          set -euo pipefail
+          mkdir -p vendor/mediapipe
+          TMP_DIR="$(mktemp -d)"
+          cd "$TMP_DIR"
+          npm pack @mediapipe/tasks-vision@0.10.22
+          tar xzf mediapipe-tasks-vision-0.10.22.tgz
+          cp package/vision_bundle.mjs "$GITHUB_WORKSPACE/vendor/mediapipe/"
+          cp package/wasm/vision_wasm_internal.wasm "$GITHUB_WORKSPACE/vendor/mediapipe/"
+          cp package/wasm/vision_wasm_internal.js "$GITHUB_WORKSPACE/vendor/mediapipe/"
+          cp package/wasm/vision_wasm_nosimd_internal.wasm "$GITHUB_WORKSPACE/vendor/mediapipe/"
+          cp package/wasm/vision_wasm_nosimd_internal.js "$GITHUB_WORKSPACE/vendor/mediapipe/"
+          curl --fail --location --retry 3 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task' --output "$GITHUB_WORKSPACE/vendor/mediapipe/hand_landmarker.task"
+          test -s "$GITHUB_WORKSPACE/vendor/mediapipe/hand_landmarker.task"
+      - name: Commit local assets
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add vendor/mediapipe
+          if ! git diff --cached --quiet; then
+            git commit -m 'Vendor MediaPipe runtime and model for offline CDN-free hand test'
+            git push
+          fi
