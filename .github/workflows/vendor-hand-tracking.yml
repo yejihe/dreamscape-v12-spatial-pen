@@ -20,8 +20,8 @@ jobs:
           mkdir -p vendor/mediapipe
           TMP_DIR="$(mktemp -d)"
           cd "$TMP_DIR"
-          npm pack @mediapipe/tasks-vision@0.10.22
-          tar xzf mediapipe-tasks-vision-0.10.22.tgz
+          npm pack @mediapipe/tasks-vision@0.10.22-rc.20250304
+          tar xzf mediapipe-tasks-vision-0.10.22-rc.20250304.tgz
           cp package/vision_bundle.mjs "$GITHUB_WORKSPACE/vendor/mediapipe/"
           cp package/wasm/vision_wasm_internal.wasm "$GITHUB_WORKSPACE/vendor/mediapipe/"
           cp package/wasm/vision_wasm_internal.js "$GITHUB_WORKSPACE/vendor/mediapipe/"
