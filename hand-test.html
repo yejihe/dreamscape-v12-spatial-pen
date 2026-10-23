@@ -9,7 +9,7 @@ button{border:0;border-radius:13px;padding:13px 14px;background:#87bbff;color:#0
 #note{position:fixed;bottom:105px;left:10px;right:10px;z-index:2;font-size:12px;color:#e3ecfa;background:#081527ba;padding:7px 10px;border-radius:9px}
 </style></head>
 <body><div id="scene"><video id="video" autoplay muted playsinline></video><canvas id="overlay"></canvas></div>
-<div id="top"><h1>🌌 Dreamscape · 捏合识别实验 R9</h1><div id="state">尚未启动</div><div id="info">点击「启动摄像头」，对准一只手。捏合拇指和食指会出现红色轨迹。</div></div>
+<div id="top"><h1>🌌 Dreamscape · 捏合识别实验 R10</h1><div id="state">尚未启动</div><div id="info">点击「启动摄像头」，对准一只手。捏合拇指和食指会出现红色轨迹。</div></div>
 <div id="note">当前仅验证视觉手势＋屏幕二维轨迹；不代表 ARCore 三维定位或 VR 已完成。请先不要购买硬件。</div>
 <div id="bottom"><button id="start">启动摄像头</button><button class="secondary" id="clear">清除轨迹</button><button class="secondary" id="flip">切换镜头</button></div>
 <script type="module">
@@ -29,22 +29,29 @@ const connections=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],
 ctx.lineWidth=2;ctx.strokeStyle='#63deff';for(const [a,b] of connections){let p=xy(lm[a]),q=xy(lm[b]);ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(q.x,q.y);ctx.stroke()}
 ctx.fillStyle=down?'#ff5877':'#7cf4ae';const tip=xy(lm[8]);ctx.beginPath();ctx.arc(tip.x,tip.y,12,0,Math.PI*2);ctx.fill()
 }
+let initializing=false;
+const timeout=(promise,ms,label)=>Promise.race([promise,new Promise((_,reject)=>setTimeout(()=>reject(new Error(label+'超时（'+Math.round(ms/1000)+'秒）')),ms))]);
 async function init(){
-if(active){status('摄像头已经启动');return}start.disabled=true;
-try{
-status('正在加载识别模型（首次需要联网）…');
-// Use the documented vision_bundle.mjs instead of the jsDelivr +esm transform.
-// Local-only loading: resources are already in the GitHub Pages repo.
-const base=new URL('./vendor/mediapipe/',document.baseURI);
-status('R9 · 加载本站识别程序');
-const mod=await import(base.href+'vision_bundle.mjs');
-status('R9 · 加载 WASM');
-const vision=await mod.FilesetResolver.forVisionTasks(base.href);
-status('R9 · 加载手部模型');
-const options={baseOptions:{modelAssetPath:base.href+'hand_landmarker.task',delegate:'CPU'},runningMode:'VIDEO',numHands:1,minHandDetectionConfidence:.55,minTrackingConfidence:.5};
-model=await mod.HandLandmarker.createFromOptions(vision,options);
-await camera();active=true;status('已启动：请把手伸到镜头前');requestAnimationFrame(loop);
-}catch(e){status('R9 启动失败：'+e.message);info.textContent='阶段诊断：'+(e.stack||String(e)).slice(0,650);start.disabled=false}
+ if(active){status('识别已经启动');return}
+ if(initializing){status('正在启动中，请看这里的进度提示');return}
+ initializing=true;start.textContent='启动中…';
+ try{
+  status('R10 · 第一步：申请摄像头权限');
+  await timeout(camera(),12000,'摄像头启动');
+  status('R10 · 摄像头已开启，准备模型');
+  const base=new URL('./vendor/mediapipe/',document.baseURI);
+  const mod=await timeout(import(base.href+'vision_bundle.mjs'),15000,'识别程序加载');
+  status('R10 · 加载识别引擎');
+  const vision=await timeout(mod.FilesetResolver.forVisionTasks(base.href),15000,'WASM 加载');
+  status('R10 · 初始化手部模型');
+  model=await timeout(mod.HandLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:base.href+'hand_landmarker.task',delegate:'CPU'},runningMode:'VIDEO',numHands:1,minHandDetectionConfidence:.55,minTrackingConfidence:.5}),30000,'模型初始化');
+  active=true;status('R10 · 已启动！请伸出手');requestAnimationFrame(loop);
+  start.textContent='已启动';
+ }catch(e){
+  status('R10 启动失败：'+e.message);
+  info.textContent='故障阶段：'+(e.stack||String(e)).slice(0,500);
+  start.textContent='重新尝试';
+ }finally{initializing=false}
 }
 async function camera(){
 if(stream)stream.getTracks().forEach(t=>t.stop());
