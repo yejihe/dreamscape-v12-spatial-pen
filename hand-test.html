@@ -9,7 +9,7 @@ button{border:0;border-radius:13px;padding:13px 14px;background:#87bbff;color:#0
 #note{position:fixed;bottom:105px;left:10px;right:10px;z-index:2;font-size:12px;color:#e3ecfa;background:#081527ba;padding:7px 10px;border-radius:9px}
 </style></head>
 <body><div id="scene"><video id="video" autoplay muted playsinline></video><canvas id="overlay"></canvas></div>
-<div id="top"><h1>🌌 Dreamscape · 捏合识别实验</h1><div id="state">尚未启动</div><div id="info">点击「启动摄像头」，对准一只手。捏合拇指和食指会出现红色轨迹。</div></div>
+<div id="top"><h1>🌌 Dreamscape · 捏合识别实验 R8</h1><div id="state">尚未启动</div><div id="info">点击「启动摄像头」，对准一只手。捏合拇指和食指会出现红色轨迹。</div></div>
 <div id="note">当前仅验证视觉手势＋屏幕二维轨迹；不代表 ARCore 三维定位或 VR 已完成。请先不要购买硬件。</div>
 <div id="bottom"><button id="start">启动摄像头</button><button class="secondary" id="clear">清除轨迹</button><button class="secondary" id="flip">切换镜头</button></div>
 <script type="module">
@@ -45,15 +45,17 @@ for(const [src,wasm] of providers){
  try{
    status('尝试加载模型库：'+new URL(src,location.href).hostname);
    const candidate=await import(/* @vite-ignore */ new URL(src,location.href).href);
-   const resolved=await candidate.FilesetResolver.forVisionTasks(new URL(wasm, location.href).href);
+   const wasmBase=new URL(wasm.replace(/\\/?$/, '/'), location.href).href;
+   const resolved=await candidate.FilesetResolver.forVisionTasks(wasmBase);
    mod=candidate;vision=resolved;break;
  }catch(err){errors.push(new URL(src,location.href).hostname+': '+err.message)}
 }
-if(!mod)throw new Error('识别库加载失败。已尝试多个线路：'+errors.join('；'));
+if(!mod)throw new Error('R8 识别库加载失败：'+errors.join('；'));
+status('R8 · 识别库已载入，正在初始化模型');
 try{model=await mod.HandLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:new URL('./vendor/mediapipe/hand_landmarker.task',location.href).href,delegate:'GPU'},runningMode:'VIDEO',numHands:1,minHandDetectionConfidence:.55,minTrackingConfidence:.5})}
 catch(e){model=await mod.HandLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:new URL('./vendor/mediapipe/hand_landmarker.task',location.href).href,delegate:'CPU'},runningMode:'VIDEO',numHands:1})}
 await camera();active=true;status('已启动：请把手伸到镜头前');requestAnimationFrame(loop);
-}catch(e){status('启动失败：'+e.message);info.textContent='已切换为 GitHub Pages 本站模型资源优先加载；如果仍失败，请检查 vendor 文件是否已由 GitHub Actions 生成。';start.disabled=false}
+}catch(e){status('R8 启动失败：'+e.message);info.textContent='阶段诊断：'+(e.stack||String(e)).slice(0,650);start.disabled=false}
 }
 async function camera(){
 if(stream)stream.getTracks().forEach(t=>t.stop());
