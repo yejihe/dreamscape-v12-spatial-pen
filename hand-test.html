@@ -33,12 +33,26 @@ async function init(){
 if(active){status('摄像头已经启动');return}start.disabled=true;
 try{
 status('正在加载识别模型（首次需要联网）…');
-const mod=await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/+esm');
-const vision=await mod.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm');
+// Use the documented vision_bundle.mjs instead of the jsDelivr +esm transform.
+const providers=[
+ ['https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/vision_bundle.mjs','https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm'],
+ ['https://unpkg.com/@mediapipe/tasks-vision@0.10.22/vision_bundle.mjs','https://unpkg.com/@mediapipe/tasks-vision@0.10.22/wasm'],
+ ['https://esm.sh/@mediapipe/tasks-vision@0.10.22','https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm']
+];
+let mod,vision,errors=[];
+for(const [src,wasm] of providers){
+ try{
+   status('尝试加载模型库：'+new URL(src).hostname);
+   const candidate=await import(/* @vite-ignore */ src);
+   const resolved=await candidate.FilesetResolver.forVisionTasks(wasm);
+   mod=candidate;vision=resolved;break;
+ }catch(err){errors.push(new URL(src).hostname+': '+err.message)}
+}
+if(!mod)throw new Error('识别库加载失败。已尝试多个线路：'+errors.join('；'));
 try{model=await mod.HandLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',delegate:'GPU'},runningMode:'VIDEO',numHands:1,minHandDetectionConfidence:.55,minTrackingConfidence:.5})}
 catch(e){model=await mod.HandLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',delegate:'CPU'},runningMode:'VIDEO',numHands:1})}
 await camera();active=true;status('已启动：请把手伸到镜头前');requestAnimationFrame(loop);
-}catch(e){status('启动失败：'+e.message);info.textContent='检查摄像头权限、网络和浏览器；建议使用 Chrome。';start.disabled=false}
+}catch(e){status('启动失败：'+e.message);info.textContent='识别库可能被网络代理/CDN 访问限制；已自动尝试备用线路。请检查网络或把错误截图发给安安。';start.disabled=false}
 }
 async function camera(){
 if(stream)stream.getTracks().forEach(t=>t.stop());
